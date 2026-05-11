@@ -157,12 +157,11 @@ fn binary_profile_build_inspect_and_verify_succeed() {
 #[test]
 fn binary_top_level_verify_profile_alias_succeeds() {
     let temp = TestDir::new("verify-alias");
-    temp.write("fixture.txt", b"fixture");
     let output_profile = temp.path().join("compiled.cff");
 
     let build = corpusforge()
         .args(["profile", "build"])
-        .arg(temp.path().join("fixture.txt"))
+        .arg(repository_fixtures_path())
         .args(["--out"])
         .arg(&output_profile)
         .output()
@@ -177,8 +176,7 @@ fn binary_top_level_verify_profile_alias_succeeds() {
 
     assert!(verify.status.success());
     let stdout = String::from_utf8(verify.stdout).expect("stdout should be UTF-8");
-    assert_profile_summary(&stdout);
-    assert!(stdout.contains("verified profile"));
+    assert_eq!(stdout, expected_fixture_summary("verified profile"));
 }
 
 #[test]
@@ -202,6 +200,50 @@ fn binary_profile_json_uses_stable_fields() {
     assert!(stdout.contains("\"profile_hash\":\"cff:"));
     assert!(stdout.contains("\"file_count\":1"));
     assert!(stdout.contains("\"byte_count\":7"));
+}
+
+#[test]
+fn binary_profile_inspect_output_matches_fixture_summary() {
+    let temp = TestDir::new("fixture-inspect");
+    let output_profile = temp.path().join("compiled.cff");
+
+    let build = corpusforge()
+        .args(["profile", "build"])
+        .arg(repository_fixtures_path())
+        .args(["--out"])
+        .arg(&output_profile)
+        .output()
+        .expect("binary should run");
+    assert!(build.status.success());
+
+    let inspect = corpusforge()
+        .args(["profile", "inspect", "--profile"])
+        .arg(&output_profile)
+        .output()
+        .expect("binary should run");
+
+    assert!(inspect.status.success());
+    let stdout = String::from_utf8(inspect.stdout).expect("stdout should be UTF-8");
+    assert_eq!(stdout, expected_fixture_summary("inspected profile"));
+}
+
+#[test]
+fn binary_malformed_profile_envelope_reports_stable_diagnostic() {
+    let temp = TestDir::new("malformed-profile");
+    temp.write("bad.cff", &[b'X'; 82]);
+
+    let output = corpusforge()
+        .args(["verify", "--profile"])
+        .arg(temp.path().join("bad.cff"))
+        .output()
+        .expect("binary should run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert_eq!(
+        stderr,
+        "error: invalid profile: bad .cff magic; expected a CorpusForge .cff binary envelope\n"
+    );
 }
 
 #[test]
@@ -319,6 +361,24 @@ fn assert_profile_summary(stdout: &str) {
     assert!(stdout.contains("profile_hash: cff:"), "{stdout}");
     assert!(stdout.contains("file_count:"), "{stdout}");
     assert!(stdout.contains("byte_count:"), "{stdout}");
+}
+
+fn expected_fixture_summary(action: &str) -> String {
+    format!(
+        "{action}\nversion: 0\nprofile_hash: cff:89032e98406a81eed8adf514815d595b7f3854b3b7cdcc95df7276fe5d46e84f\nfile_count: 3\nbyte_count: 212\n"
+    )
+}
+
+fn repository_fixtures_path() -> PathBuf {
+    workspace_root().join("tests").join("fixtures")
+}
+
+fn workspace_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("crate should live below workspace crates directory")
+        .to_path_buf()
 }
 
 struct TestDir {

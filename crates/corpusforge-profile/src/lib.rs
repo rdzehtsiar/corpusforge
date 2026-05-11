@@ -131,6 +131,7 @@ fn stable_relative_path(path: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::{compile_path, crate_name};
+    use corpusforge_cff::InspectSummary;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -211,6 +212,35 @@ mod tests {
         assert_eq!(pack.files()[0].bytes(), bytes);
     }
 
+    #[test]
+    fn repository_fixtures_compile_to_stable_hash_and_summary() {
+        let pack = compile_path(workspace_root().join("tests").join("fixtures"))
+            .expect("repository fixtures should compile");
+        let rebuilt = compile_path(workspace_root().join("tests").join("fixtures"))
+            .expect("repository fixtures should compile again");
+
+        assert_eq!(pack.profile_hash(), rebuilt.profile_hash());
+        assert_eq!(
+            pack.inspect(),
+            InspectSummary {
+                version: 0,
+                file_count: 3,
+                payload_length: 293,
+                payload_hash: "1ad382a37077bfb06fc3be28e0a046c64e120fc85519003dec929a4fe2f1ac18"
+                    .to_owned(),
+                profile_hash:
+                    "cff:89032e98406a81eed8adf514815d595b7f3854b3b7cdcc95df7276fe5d46e84f"
+                        .to_owned(),
+                total_file_bytes: 212,
+                file_paths: vec![
+                    "basic_ascii.txt".to_owned(),
+                    "basic_unicode.txt".to_owned(),
+                    "empty.txt".to_owned(),
+                ],
+            }
+        );
+    }
+
     struct TestDir {
         path: PathBuf,
     }
@@ -251,5 +281,13 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.path);
         }
+    }
+
+    fn workspace_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("crate should live below workspace crates directory")
+            .to_path_buf()
     }
 }
