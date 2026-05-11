@@ -9,6 +9,9 @@ version = "0.1.0"
 [[package]]
 name = "corpusforge-cli"
 version = "0.1.0"
+dependencies = [
+ "corpusforge-core",
+]
 
 [[package]]
 name = "corpusforge-core"

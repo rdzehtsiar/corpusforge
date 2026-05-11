@@ -131,7 +131,10 @@ mod tests {
     #[test]
     fn exposes_stable_categories() {
         let cases = [
-            (CorpusForgeError::invalid_seed("seed is empty"), "invalid_seed"),
+            (
+                CorpusForgeError::invalid_seed("seed is empty"),
+                "invalid_seed",
+            ),
             (
                 CorpusForgeError::invalid_profile("missing version"),
                 "invalid_profile",

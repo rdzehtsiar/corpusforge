@@ -7,6 +7,9 @@ license.workspace = true
 authors.workspace = true
 description = "CorpusForge command line interface placeholder"
 
+[dependencies]
+corpusforge-core = { path = "../corpusforge-core" }
+
 [[bin]]
 name = "corpusforge"
 path = "src/main.rs"
