@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/corpusforge-cff",
+    "crates/corpusforge-cli",
+    "crates/corpusforge-core",
+    "crates/corpusforge-ngram",
+    "crates/corpusforge-profile",
+    "crates/corpusforge-shrink",
+    "crates/corpusforge-testkit",
+    "crates/corpusforge-unicode",
+]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.76"
+license = "Apache-2.0"
+authors = ["CorpusForge contributors"]
+description = "Offline deterministic corpus compiler for adversarial text generation"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
