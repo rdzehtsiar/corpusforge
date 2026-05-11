@@ -10,20 +10,21 @@ CorpusForge is not an AI writing tool, a local language model, a hosted service,
 
 ## Current Shape
 
-Milestone 1 establishes the repository foundation. The Rust workspace and CLI skeleton exist, but the core product behavior is not implemented yet.
+The repository has moved beyond the initial foundation, but the main corpus generation pipeline is still incomplete. The Rust workspace, CLI skeleton, deterministic core primitives, and Milestone 3 `.cff` v0 profile workflows exist.
 
 Implemented now:
 
 - Rust workspace with placeholder crates.
 - `corpusforge-cli` package and `corpusforge` binary.
 - CLI help and version output.
-- Placeholder command execution that returns `NotImplemented`.
-- Shared project error categories in `corpusforge-core`.
+- Shared project error categories, seed parsing, domain-separated deterministic streams, and integer sampling in `corpusforge-core`.
+- `.cff` v0 profile reader, writer, verifier, versioning, and hashing logic.
+- Deterministic fixture profile compilation for `.cff` v0 profile packs.
+- CLI profile build, inspect, and verify behavior for implemented fixture profile workflows.
 
 Not implemented yet:
 
 - corpus generation
-- `.cff` profile serialization, parsing, verification, or hashing
 - Unicode mutation or invalid-byte generation
 - n-gram training or sampling
 - shrinking or replay behavior
@@ -53,14 +54,14 @@ Local inputs / built-in profiles / future grammars
  Local tests / CI     Regression fixture
 ```
 
-The diagram describes the planned architecture. Milestone 1 only provides the workspace, placeholder crates, and CLI surface needed to build this incrementally.
+The diagram describes the planned architecture. Milestone 3 implements deterministic `.cff` v0 fixture profile build, read, inspect, verify, and hashing pieces, but the generator, shrinker, replay, and CI reporting stages remain planned.
 
 ## Crate Responsibilities
 
 - `corpusforge-cli`: command-line parsing, help text, exit behavior, and orchestration. It should not contain core generation logic.
 - `corpusforge-core`: shared errors, result types, seed handling, deterministic stream primitives, and shared domain types.
-- `corpusforge-cff`: future `.cff` profile pack reader, writer, verifier, versioning, and hashing logic.
-- `corpusforge-profile`: future profile compilation from local inputs into profile packs.
+- `corpusforge-cff`: implemented `.cff` v0 profile pack reader, writer, verifier, versioning, and hashing logic.
+- `corpusforge-profile`: deterministic fixture profile compilation into `.cff` v0 profile packs, with broader profile compilation still planned.
 - `corpusforge-unicode`: future Unicode adversarial layers, including normalization, bidi, zero-width characters, emoji sequences, confusables, and byte-mode boundaries.
 - `corpusforge-ngram`: future deterministic weighted n-gram profile building and sampling.
 - `corpusforge-shrink`: future reducer and minimizer logic independent from specific parsers or tokenizers.
@@ -78,8 +79,8 @@ Initial development does not include:
 - nondeterministic sampling that cannot be reproduced
 - compatibility claims without tests naming the verified behavior
 
-## Milestone 1 Limitations
+## Current Limitations
 
-The current CLI is intentionally shallow. Help text exists so future command behavior has a stable entry point, but executing planned commands does not generate, shrink, replay, verify, or report on corpora yet.
+The current CLI is intentionally narrow. Help text keeps planned command behavior visible, and implemented profile commands can build, inspect, and verify `.cff` v0 fixture profile packs. Planned commands still do not generate, shrink, replay, or report on corpora yet.
 
-The v0 architecture is still subject to change. Public command names should be treated as early project direction, while file formats and deterministic output behavior are not stable until later milestones define and test them.
+The v0 architecture is still subject to change. Public command names should be treated as early project direction. The `.cff` v0 format is implemented for current fixtures, but it is unstable and has no cross-version compatibility guarantee. Corpus output behavior is not stable until later milestones define and test it.

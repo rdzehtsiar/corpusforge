@@ -14,10 +14,11 @@ same tool version
 = same observable output bytes and reports
 ```
 
-Milestone 2 implements only a narrow part of that contract: master seed parsing,
-domain-separated deterministic streams, integer bounded sampling, and
-integer-only weighted choice. Corpus generation, `.cff` profile behavior,
-Unicode mutation, replay, shrinking, and CI reports are still not implemented.
+The current implementation covers part of that contract: master seed parsing,
+domain-separated deterministic streams, integer bounded sampling,
+integer-only weighted choice, `.cff` v0 serialization, verification, hashing,
+and deterministic fixture profile compilation. Corpus generation, Unicode
+mutation, replay, shrinking, and CI reports are still not implemented.
 
 All v0 deterministic behavior is unstable until explicitly versioned with a
 compatibility guarantee and supporting tests.
@@ -107,8 +108,11 @@ Small golden fixtures under `tests/golden` currently cover:
 - seed `1337`, `DOMAIN_NGRAM`, context `weighted`,
   `WeightedTable::new([1, 3, 6, 10])`, first 16 selected indexes
 
-These fixtures assert the current core APIs exactly. They do not claim corpus,
-profile, Unicode mutation, replay, shrink, CLI output, or report compatibility.
+These fixtures assert the current core APIs exactly. Additional `.cff` and
+profile fixtures cover current v0 serialization, verification, hashing, and
+deterministic fixture profile compilation. They do not claim corpus generation,
+Unicode mutation, replay, shrink, broad CLI output, report, or cross-version
+format compatibility.
 
 ## CLI Status
 
@@ -116,10 +120,11 @@ The CLI currently exposes planned command names and parses common flags such as
 `--seed`, `--seed-file`, `--profile`, `--out`, `--bytes`, `--determinism`,
 `--metadata-out`, `--quiet`, and `--json` for placeholder commands.
 
-Command execution for generation, verification, shrinking, replay, and CI
-reporting is not implemented. CLI flag parsing does not yet connect to core seed
-parsing, deterministic stream construction, weighted sampling, profile loading,
-or output generation.
+Profile build, inspect, and verify command behavior exists for implemented
+`.cff` v0 fixture profile workflows. Command execution for generation,
+shrinking, replay, and CI reporting is not implemented. CLI generation flags do
+not yet connect to deterministic stream construction, weighted sampling, profile
+loading for generation, or output generation.
 
 ## Offline and Privacy Defaults
 
@@ -135,7 +140,7 @@ explicit approval and must not affect the default offline binary.
 Unsupported behavior includes:
 
 - deterministic corpus output
-- `.cff` profile serialization, verification, hashing, or compatibility checks
+- stable `.cff` cross-version compatibility guarantees
 - Unicode mutation modes
 - weighted n-gram corpus generation
 - byte-level invalid UTF-8 generation

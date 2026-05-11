@@ -24,11 +24,13 @@ The product direction is:
 
 ## Current State
 
-CorpusForge is at the foundation stage of development.
+CorpusForge is at an early implementation stage.
 
-This repository now contains a Rust workspace, placeholder crates, shared error types, and a CLI skeleton. The `corpusforge` binary can print top-level and command-specific help, and planned commands currently return clean `NotImplemented` errors when executed.
+This repository now contains a Rust workspace, shared error types, deterministic seed and stream primitives, a CLI skeleton, and Milestone 3 `.cff` v0 profile support. The `corpusforge` binary can print top-level and command-specific help, and `.cff` v0 profile build, read, inspect, and verify workflows exist for deterministic fixture profiles.
 
-There is not yet implemented corpus generation, `.cff` profile reading or writing, Unicode mutation, n-gram training, shrinking, packaging, or release automation. File formats, deterministic output guarantees, compatibility claims, and generation behavior should be treated as planned until implemented and covered by tests.
+Corpus generation, Unicode mutation, n-gram training and generation, shrinking, replay, packaging, and release automation are not implemented yet.
+
+Profile format support is limited to unstable `.cff` v0 behavior with no cross-version compatibility guarantee. Broader deterministic output guarantees, compatibility claims, and generation behavior should be treated as planned until implemented and covered by tests.
 
 Do not rely on CorpusForge for production workflows yet.
 
