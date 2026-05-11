@@ -7,5 +7,9 @@ license.workspace = true
 authors.workspace = true
 description = "CorpusForge profile format placeholders"
 
+[dependencies]
+blake3 = "1.5.5"
+corpusforge-core = { path = "../corpusforge-core" }
+
 [lints]
 workspace = true
