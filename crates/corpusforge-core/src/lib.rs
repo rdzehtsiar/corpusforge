@@ -4,6 +4,7 @@
 
 pub mod rng;
 pub mod seed;
+pub mod weighted;
 
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
