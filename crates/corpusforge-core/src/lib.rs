@@ -2,6 +2,7 @@
 
 //! Shared core types for CorpusForge.
 
+pub mod rng;
 pub mod seed;
 
 use std::error::Error;
@@ -17,6 +18,8 @@ pub enum CorpusForgeError {
     Io(std::io::Error),
     /// A seed value could not be parsed or accepted.
     InvalidSeed { message: String },
+    /// A caller supplied an invalid argument to a core API.
+    InvalidArgument { message: String },
     /// A profile is malformed or violates profile rules.
     InvalidProfile { message: String },
     /// A profile, report, or data format version is unsupported.
@@ -35,6 +38,7 @@ impl CorpusForgeError {
         match self {
             Self::Io(_) => "io",
             Self::InvalidSeed { .. } => "invalid_seed",
+            Self::InvalidArgument { .. } => "invalid_argument",
             Self::InvalidProfile { .. } => "invalid_profile",
             Self::UnsupportedVersion { .. } => "unsupported_version",
             Self::DeterminismViolation { .. } => "determinism_violation",
@@ -46,6 +50,13 @@ impl CorpusForgeError {
     /// Builds an invalid seed error.
     pub fn invalid_seed(message: impl Into<String>) -> Self {
         Self::InvalidSeed {
+            message: message.into(),
+        }
+    }
+
+    /// Builds an invalid argument error.
+    pub fn invalid_argument(message: impl Into<String>) -> Self {
+        Self::InvalidArgument {
             message: message.into(),
         }
     }
@@ -91,6 +102,7 @@ impl Display for CorpusForgeError {
         match self {
             Self::Io(error) => write!(formatter, "I/O error: {error}"),
             Self::InvalidSeed { message } => write!(formatter, "invalid seed: {message}"),
+            Self::InvalidArgument { message } => write!(formatter, "invalid argument: {message}"),
             Self::InvalidProfile { message } => write!(formatter, "invalid profile: {message}"),
             Self::UnsupportedVersion { message } => {
                 write!(formatter, "unsupported version: {message}")
@@ -109,6 +121,7 @@ impl Error for CorpusForgeError {
         match self {
             Self::Io(error) => Some(error),
             Self::InvalidSeed { .. }
+            | Self::InvalidArgument { .. }
             | Self::InvalidProfile { .. }
             | Self::UnsupportedVersion { .. }
             | Self::DeterminismViolation { .. }
@@ -136,6 +149,10 @@ mod tests {
             (
                 CorpusForgeError::invalid_seed("seed is empty"),
                 "invalid_seed",
+            ),
+            (
+                CorpusForgeError::invalid_argument("bound is zero"),
+                "invalid_argument",
             ),
             (
                 CorpusForgeError::invalid_profile("missing version"),

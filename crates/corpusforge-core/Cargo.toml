@@ -9,6 +9,8 @@ description = "CorpusForge shared core placeholders"
 
 [dependencies]
 blake3 = "1.5"
+rand_chacha = "0.3"
+rand_core = "0.6"
 
 [lints]
 workspace = true
