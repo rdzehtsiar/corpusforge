@@ -81,6 +81,10 @@ version = "0.1.0"
 [[package]]
 name = "corpusforge-profile"
 version = "0.1.0"
+dependencies = [
+ "corpusforge-cff",
+ "corpusforge-core",
+]
 
 [[package]]
 name = "corpusforge-shrink"

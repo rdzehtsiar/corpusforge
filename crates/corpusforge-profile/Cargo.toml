@@ -7,5 +7,9 @@ license.workspace = true
 authors.workspace = true
 description = "CorpusForge profile compiler placeholders"
 
+[dependencies]
+corpusforge-cff = { path = "../corpusforge-cff" }
+corpusforge-core = { path = "../corpusforge-core" }
+
 [lints]
 workspace = true
