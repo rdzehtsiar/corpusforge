@@ -2,6 +2,8 @@
 
 //! Shared core types for CorpusForge.
 
+pub mod metadata;
+pub mod output;
 pub mod rng;
 pub mod seed;
 pub mod weighted;
