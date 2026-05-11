@@ -1,8 +1,9 @@
 # Determinism
 
-## Contract Draft
+## Current Scope
 
-CorpusForge is designed around reproducible hostile-text workflows. The intended contract is:
+CorpusForge is designed around reproducible hostile-text workflows. The intended
+contract is:
 
 ```text
 same tool version
@@ -13,50 +14,135 @@ same tool version
 = same observable output bytes and reports
 ```
 
-This is a draft contract. Milestone 1 does not implement corpus generation, `.cff` profiles, deterministic streams, replay, or shrinking. The contract becomes enforceable only as those systems are implemented and covered by tests.
+Milestone 2 implements only a narrow part of that contract: master seed parsing,
+domain-separated deterministic streams, integer bounded sampling, and
+integer-only weighted choice. Corpus generation, `.cff` profile behavior,
+Unicode mutation, replay, shrinking, and CI reports are still not implemented.
 
-## v0 Stability Warning
+All v0 deterministic behavior is unstable until explicitly versioned with a
+compatibility guarantee and supporting tests.
 
-All v0 behavior is unstable until explicitly documented otherwise. During early milestones, the project may change:
+## Implemented Seed Formats
 
-- seed syntax
-- deterministic stream derivation
-- profile format layout
-- profile hash rules
-- command flags
-- report formats
-- generated output semantics
+`corpusforge-core` represents a master seed as exactly 32 bytes.
 
-Any future compatibility guarantee must identify the exact version, format, command, and tests that support it.
+Implemented seed inputs:
 
-## Required Invariants
+- Decimal integer text, such as `1337`.
+- Hex seed text with the `hex:` prefix followed by exactly 64 hex characters.
+- Seed files containing exactly 32 raw bytes.
 
-Future deterministic behavior must preserve these invariants:
+Decimal integer seeds must contain only ASCII digits and must not be empty.
+Leading zeroes are canonicalized away before hashing, so `42` and `00042`
+produce the same master seed. The canonical decimal string `0` is used for
+inputs containing only zeroes.
 
-- Seeds are parsed explicitly and invalid seeds fail with clear diagnostics.
-- Independent generation components use domain-separated streams.
-- Profile content and profile version participate in reproducibility metadata.
-- User-visible file traversal, diagnostics, reports, and compatibility results are sorted by stable keys.
-- Generation paths that must be reproducible use integer probability tables or equivalent deterministic discrete sampling.
-- Default reports and golden outputs avoid timestamps, absolute paths, locale-dependent formatting, and host-specific state.
-- Valid text modes and raw byte modes remain separate, especially for invalid UTF-8 cases.
+Integer seed expansion is:
+
+```text
+BLAKE3("corpusforge.master_seed.integer.v1\0" || canonical_decimal_ascii)
+```
+
+The 32-byte BLAKE3 output is the master seed. Display formatting renders master
+seeds as lowercase 64-character hex.
+
+Hex seed text is decoded directly into the 32-byte master seed. Uppercase and
+lowercase hex digits are accepted, and display formatting remains lowercase.
+
+## Stream Domains
+
+Implemented stream domains are explicit byte labels:
+
+| Constant | Label |
+| --- | --- |
+| `DOMAIN_ROOT` | `corpusforge/v0/root` |
+| `DOMAIN_PROFILE` | `corpusforge/v0/profile` |
+| `DOMAIN_NGRAM` | `corpusforge/v0/ngram` |
+| `DOMAIN_UNICODE` | `corpusforge/v0/unicode` |
+| `DOMAIN_CORRUPTION` | `corpusforge/v0/corruption` |
+| `DOMAIN_SHRINK` | `corpusforge/v0/shrink` |
+| `DOMAIN_REPLAY` | `corpusforge/v0/replay` |
+
+Stream seed derivation is:
+
+```text
+BLAKE3(master_seed || domain_label || context)
+```
+
+`context` is optional byte input. The no-context constructor uses empty context
+bytes.
+
+The 32-byte BLAKE3 output seeds `rand_chacha::ChaCha20Rng`. The implemented
+stream API exposes `next_u32`, `next_u64`, `fill_bytes`, and `usize_below`.
+There is no implemented seek, skip-ahead, named counter, or stream transcript
+format yet.
+
+## Integer Sampling
+
+`usize_below(bound)` and weighted choice use integer rejection sampling to avoid
+modulo bias. A zero bound returns an `invalid_argument` project error.
+
+For a non-zero `u64` bound, sampling uses:
+
+```text
+threshold = bound.wrapping_neg() % bound
+repeat:
+  value = stream.next_u64()
+  if value >= threshold:
+    return value % bound
+```
+
+`WeightedTable` stores cumulative `u64` weights in input order and rejects empty
+tables, zero total weight, and total-weight overflow. `choose_index` samples a
+target in `0..total_weight` with the rule above, then returns the first index
+whose cumulative weight is greater than the target. Zero-weight entries are
+therefore never selected.
+
+## Golden Fixtures
+
+Small golden fixtures under `tests/golden` currently cover:
+
+- seed `1337`, `DOMAIN_NGRAM`, first 32 stream bytes as hex
+- seed `1337`, `DOMAIN_UNICODE`, first 32 stream bytes as hex
+- seed `1337`, `DOMAIN_NGRAM`, context `weighted`,
+  `WeightedTable::new([1, 3, 6, 10])`, first 16 selected indexes
+
+These fixtures assert the current core APIs exactly. They do not claim corpus,
+profile, Unicode mutation, replay, shrink, CLI output, or report compatibility.
+
+## CLI Status
+
+The CLI currently exposes planned command names and parses common flags such as
+`--seed`, `--seed-file`, `--profile`, `--out`, `--bytes`, `--determinism`,
+`--metadata-out`, `--quiet`, and `--json` for placeholder commands.
+
+Command execution for generation, verification, shrinking, replay, and CI
+reporting is not implemented. CLI flag parsing does not yet connect to core seed
+parsing, deterministic stream construction, weighted sampling, profile loading,
+or output generation.
 
 ## Offline and Privacy Defaults
 
-The default CorpusForge workflow must be offline. The default binary must not make network calls, require a cloud account, upload crashes, check for updates, or collect telemetry.
+The default CorpusForge workflow must be offline. The default binary must not
+make network calls, require a cloud account, upload crashes, check for updates,
+or collect telemetry.
 
-Adding network, telemetry, analytics, or runtime ML dependencies requires explicit approval and must not affect the default offline binary.
+Adding network, telemetry, analytics, or runtime ML dependencies requires
+explicit approval and must not affect the default offline binary.
 
-## Unsupported Behavior
+## Current Limitations
 
-Milestone 1 does not support:
+Unsupported behavior includes:
 
 - deterministic corpus output
+- `.cff` profile serialization, verification, hashing, or compatibility checks
+- Unicode mutation modes
+- weighted n-gram corpus generation
+- byte-level invalid UTF-8 generation
 - replay from seed/profile/range metadata
 - shrinking or predicate execution
-- `.cff` verification or compatibility checks
-- Unicode mutation modes
-- byte-level invalid UTF-8 generation
 - machine-readable CI reports
+- cross-version deterministic compatibility guarantees
 
-The CLI may expose planned commands for these workflows, but command execution is not implemented yet.
+Future compatibility guarantees must identify the exact version, format,
+command, and tests that support them.

@@ -8,6 +8,9 @@ pub mod rng;
 pub mod seed;
 pub mod weighted;
 
+#[cfg(test)]
+mod golden;
+
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 
