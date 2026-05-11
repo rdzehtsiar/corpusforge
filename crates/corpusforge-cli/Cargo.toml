@@ -8,7 +8,9 @@ authors.workspace = true
 description = "CorpusForge command line interface placeholder"
 
 [dependencies]
+corpusforge-cff = { path = "../corpusforge-cff" }
 corpusforge-core = { path = "../corpusforge-core" }
+corpusforge-profile = { path = "../corpusforge-profile" }
 
 [[bin]]
 name = "corpusforge"
