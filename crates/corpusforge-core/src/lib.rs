@@ -2,6 +2,8 @@
 
 //! Shared core types for CorpusForge.
 
+pub mod seed;
+
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 
