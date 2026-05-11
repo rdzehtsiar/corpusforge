@@ -13,7 +13,7 @@ The first product focus is deliberately narrow:
 - reproducible failing samples
 - shrinking/minimization of text failure cases
 
-The repository is currently in the planning and specification stage. There is no implemented application yet. Do not assume an existing architecture, crate layout, package manager, frontend framework, or test harness unless it is present in the repository.
+The repository is still early, but it now has a Rust workspace foundation. The current implementation includes placeholder crates, shared core error types, and a CLI skeleton. Core generation, `.cff` profile behavior, Unicode mutation, n-gram generation, shrinking, replay, and CI reporting behavior are not implemented yet. Do not claim or rely on behavior that is not present in the repository.
 
 ## Product Boundaries
 
@@ -43,7 +43,7 @@ Out of initial scope:
 
 ## Implementation Guidance
 
-When implementation begins, prefer choices that preserve the product promise:
+When implementing, prefer choices that preserve the product promise:
 
 - offline by default
 - no telemetry by default
@@ -53,11 +53,11 @@ When implementation begins, prefer choices that preserve the product promise:
 - clear explanations for malformed input, unsupported modes, and failing predicates
 - minimal setup for local users and CI systems
 
-The plan currently recommends a Rust workspace with a CLI-first architecture and eventual single static binary. Treat that as direction from the project plan, but still verify the current repository state before adding tooling or structure.
+The project currently uses a Rust workspace with a CLI-first architecture and an eventual single static binary goal. Verify the current repository state before adding tooling or structure, and keep new work aligned with the existing workspace rather than replacing it.
 
-## Recommended Architecture Direction
+## Architecture Boundaries
 
-Do not create this structure blindly. Use it as guidance once the repository is ready for implementation and the task explicitly calls for project scaffolding.
+The workspace is intentionally split into focused crates. Preserve these boundaries unless the user explicitly approves a design change.
 
 ```text
 corpusforge/
@@ -69,9 +69,7 @@ corpusforge/
     corpusforge-profile/      # profile compiler
     corpusforge-unicode/      # Unicode adversarial layer
     corpusforge-ngram/        # weighted n-gram engine
-    corpusforge-grammar/      # grammar engine for later milestones
     corpusforge-shrink/       # reducer/minimizer
-    corpusforge-ci/           # report formats and CI helpers
     corpusforge-testkit/      # shared test utilities and golden fixtures
   profiles/
   examples/
@@ -87,6 +85,16 @@ Keep concerns separated:
 - shrinking should be independent from specific parser or tokenizer integrations
 - CLI code should orchestrate behavior, not contain core generation logic
 - report formats should be stable, sorted, and testable
+
+Protected areas require extra care because they define compatibility and reproducibility:
+
+- seed parsing, seed display, and domain-separated stream derivation
+- `.cff` file format, profile hashing, compatibility checks, and diagnostics
+- CLI command names, exit codes, stdout/stderr contracts, and machine-readable output
+- determinism rules, fixture formats, golden outputs, and report ordering
+- raw byte versus valid text mode boundaries
+
+Changes in these areas should be small, covered by tests where practical, and reviewed for backwards-compatibility and reproducibility impact.
 
 ## Code Quality Requirements
 
@@ -243,3 +251,27 @@ Do not claim broad parser, tokenizer, Markdown, JSON, Unicode, or platform compa
 - Do not expose private roadmap or business-planning details from planning documents in public-facing documentation.
 - Do not revert user changes. If git reports dubious ownership, do not change global git config unless the user asks or the task requires git operations.
 - Use imperative mood for commit messages. Prefer subjects such as `Add license metadata`, `Initialize Rust workspace`, or `Document determinism guarantees` instead of past-tense forms such as `Added`, `Initialized`, or `Documented`.
+
+## Milestone 1 Agent Workflow
+
+Milestone 1 work should proceed as small, bounded tasks. Each task should have a narrow write scope, explicit acceptance criteria, and a practical review before it is committed.
+
+Required workflow for implementation tasks:
+
+- Confirm the current worktree state before editing, and do not revert edits made by other agents or users.
+- Assign one worker pass to implement only the agreed task scope.
+- Assign a separate reviewer pass to check practical blockers: correctness, scope creep, missing tests, determinism or offline violations, lint/build risks, documentation claims, and protected architecture impact.
+- Iterate only on blocking review findings. Avoid open-ended polish loops or speculative improvements outside the task.
+- Record a short review summary before commit, including what was checked and any accepted limitations.
+- Run the relevant task gates before commit, then commit with an imperative subject.
+
+Required checks for Milestone 1 changes, adjusted only when the task scope makes a check irrelevant:
+
+```text
+C:\Users\Roman\.cargo\bin\cargo.exe fmt --check
+C:\Users\Roman\.cargo\bin\cargo.exe clippy --workspace --all-targets -- -D warnings
+C:\Users\Roman\.cargo\bin\cargo.exe test --workspace
+C:\Users\Roman\.cargo\bin\cargo.exe run -p corpusforge-cli -- --help
+```
+
+CLI behavior changes should also check affected subcommand help, especially `profile`, `gen`, `shrink`, `replay`, `verify`, and `ci`. Core-only changes may use narrower package tests during iteration, but the full workspace gates should pass before final milestone completion.
