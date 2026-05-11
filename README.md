@@ -20,9 +20,11 @@ The product direction is:
 
 ## Current State
 
-CorpusForge is at the very beginning of development.
+CorpusForge is at the foundation stage of development.
 
-This repository currently contains planning documentation and project metadata. There is not yet an implemented application, stable CLI, crate layout, package manager setup, or test harness. Commands, file formats, architecture, and compatibility claims should be treated as planned until implemented and covered by tests.
+This repository now contains a Rust workspace, placeholder crates, shared error types, and a CLI skeleton. The `corpusforge` binary can print top-level and command-specific help, and planned commands currently return clean `NotImplemented` errors when executed.
+
+There is not yet implemented corpus generation, `.cff` profile reading or writing, Unicode mutation, n-gram training, shrinking, packaging, or release automation. File formats, deterministic output guarantees, compatibility claims, and generation behavior should be treated as planned until implemented and covered by tests.
 
 Do not rely on CorpusForge for production workflows yet.
 
@@ -76,17 +78,26 @@ CorpusForge is not intended to be:
 
 ## Development
 
-Implementation has not started. When it does, the current plan favors a Rust CLI-first workspace with deterministic tests and a single static binary as a distribution goal.
+Development currently uses a Rust CLI-first workspace with deterministic tests and a single static binary as a distribution goal.
 
-Expected local checks will be documented once the workspace exists. Early Rust checks are expected to include commands such as:
+Local checks:
 
 ```powershell
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+cargo run -p corpusforge-cli -- --help
 ```
 
 These checks should stay offline and deterministic.
+
+Project documentation:
+
+- [Architecture](./docs/architecture.md)
+- [Determinism](./docs/determinism.md)
+- [Roadmap](./docs/roadmap.md)
+- [Agent workflow](./docs/agent-workflow.md)
+- [Contributing](./CONTRIBUTING.md)
 
 ## License
 
