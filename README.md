@@ -1,9 +1,5 @@
 # CorpusForge
 
-[![Tests](https://github.com/rdzehtsiar/corpusforge/actions/workflows/tests.yml/badge.svg)](https://github.com/rdzehtsiar/corpusforge/actions/workflows/tests.yml)
-[![codecov](https://codecov.io/gh/rdzehtsiar/corpusforge/graph/badge.svg)](https://codecov.io/gh/rdzehtsiar/corpusforge)
-[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=rdzehtsiar_corpusforge&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=rdzehtsiar_corpusforge)
-
 CorpusForge is a planned offline, deterministic corpus compiler for hostile text. It is intended for engineers who need reproducible inputs that stress tokenizers, parsers, renderers, compression behavior, Unicode handling, and text preprocessing pipelines.
 
 The project is not an AI writing tool, a local language model, or a generic lorem ipsum generator. Its goal is engineering reliability: generate adversarial text and byte corpora that can be reproduced, minimized, and turned into regression fixtures.
