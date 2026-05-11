@@ -1,0 +1,5 @@
+token=alpha-01
+path: ../strange//segment
+quote: "unterminated-ish
+brackets: [({})]
+whitespace: tab->	end

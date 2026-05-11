@@ -1,0 +1,5 @@
+zero-width: a​b
+combining: café
+bidi-mark: start‎end
+emoji-sequence: 👩‍💻
+mixed: Z͑WJ‍test
