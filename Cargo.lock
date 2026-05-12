@@ -99,6 +99,9 @@ dependencies = [
 [[package]]
 name = "corpusforge-shrink"
 version = "0.1.0"
+dependencies = [
+ "corpusforge-core",
+]
 
 [[package]]
 name = "corpusforge-testkit"
