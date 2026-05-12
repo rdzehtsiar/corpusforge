@@ -26,13 +26,13 @@ The product direction is:
 
 CorpusForge is at an early implementation stage.
 
-This repository now contains a Rust workspace, shared error types, deterministic seed and stream primitives, a CLI skeleton, and Milestone 3 `.cff` v0 profile support. The `corpusforge` binary can print top-level and command-specific help, and `.cff` v0 profile build, read, inspect, and verify workflows exist for deterministic fixture profiles.
+This repository now contains a Rust workspace, shared error types, deterministic seed and stream primitives, a CLI skeleton, Milestone 3 `.cff` v0 profile support, and Milestone 6 built-in tokenizer Unicode workflows. The `corpusforge` binary can print top-level and command-specific help, and `.cff` v0 profile build, read, inspect, and verify workflows exist for deterministic fixture profiles.
 
-The `corpusforge-unicode` crate now includes Milestone 4 library APIs for deterministic, fixture-based Unicode adversarial generation. It supports mode and output-boundary validation plus `generate_valid_text` and `generate_raw_bytes` APIs for these mode labels: `grapheme`, `bidi`, `zero-width`, `emoji`, `normalization`, `mixed`, and `invalid-utf8`.
+The `corpusforge-unicode` crate includes Milestone 4 library APIs for deterministic, fixture-based Unicode adversarial generation. The CLI also exposes these fixture-based tokenizer modes through `corpusforge gen --unicode ...` and `corpusforge ci tokenizer`: `grapheme`, `bidi`, `zero-width`, `emoji`, `normalization`, `mixed`, and `invalid-utf8`.
 
-Unicode output boundaries are intentionally separate. Valid-text generation returns UTF-8 text and rejects `invalid-utf8`. Raw-byte generation returns bytes and is the only supported path for `invalid-utf8` cases. The current implementation samples from built-in fixtures with deterministic streams; it is not a broad Unicode compatibility guarantee.
+Unicode output boundaries are intentionally separate. Valid-text generation returns UTF-8 text and rejects `invalid-utf8`. Raw-byte generation returns bytes and is the only supported path for `invalid-utf8` cases. The current implementation samples from built-in fixtures with deterministic streams; it is not a broad Unicode or tokenizer compatibility guarantee.
 
-CLI generation is not wired to the Unicode APIs yet. N-gram training and generation, shrinking, replay, CI reports, packaging, and release automation are not implemented yet.
+N-gram training and profile-backed generation are implemented as a byte-level bigram MVP. `corpusforge ci tokenizer` can run an external stdin harness against built-in tokenizer Unicode samples and write a stable JSON report. Shrinking, replay metadata, broader CI integrations, packaging, and release automation are not implemented yet.
 
 Profile format support is limited to unstable `.cff` v0 behavior with no cross-version compatibility guarantee. Broader deterministic output guarantees, compatibility claims, and generation behavior should be treated as planned until implemented and covered by tests.
 
@@ -105,6 +105,7 @@ Project documentation:
 
 - [Architecture](./docs/architecture.md)
 - [Determinism](./docs/determinism.md)
+- [Tokenizer workflow demo](./docs/tokenizer-workflow.md)
 - [Roadmap](./docs/roadmap.md)
 - [Agent workflow](./docs/agent-workflow.md)
 - [Contributing](./CONTRIBUTING.md)
