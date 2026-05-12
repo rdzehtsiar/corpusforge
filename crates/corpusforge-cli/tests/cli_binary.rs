@@ -173,17 +173,25 @@ fn binary_ci_tokenizer_writes_passing_report_and_preserves_arg_order() {
     assert!(stdout.contains("case_count: 2"));
 
     let json = fs::read_to_string(&report).expect("report should exist");
-    assert!(json.contains("\"command\":\"ci tokenizer\""));
-    assert!(json.contains("\"profile_hash\":null"));
-    assert!(json.contains("\"unicode_mode\":\"grapheme\""));
-    assert!(json.contains("\"output_kind\":\"valid-text\""));
-    assert!(json.contains("\"case_count\":2"));
-    assert!(json.contains("\"status\":\"passed\""));
-    assert!(json.contains("\"failure_sample\":null"));
-    assert!(json.contains(&format!(
-        "\"harness_command\":\"{} --version --literal-second\"",
-        json_escape_for_test(&harness.display().to_string())
-    )));
+    assert_eq!(
+        json,
+        format!(
+            concat!(
+                "{{\"tool_version\":\"{}\",",
+                "\"command\":\"ci tokenizer\",",
+                "\"seed\":\"096875ea372a1b80bcccb9d8f3f10dde3e0f65e6facc94bf477e3b9531c7aa51\",",
+                "\"profile_hash\":null,",
+                "\"unicode_mode\":\"grapheme\",",
+                "\"output_kind\":\"valid-text\",",
+                "\"case_count\":2,",
+                "\"harness_command\":\"{} --version --literal-second\",",
+                "\"status\":\"passed\",",
+                "\"failure_sample\":null}}"
+            ),
+            env!("CARGO_PKG_VERSION"),
+            json_escape_for_test(&harness.display().to_string())
+        )
+    );
 }
 
 #[test]
@@ -264,10 +272,30 @@ fn binary_ci_tokenizer_writes_failing_report_with_failure_sample() {
     assert!(stderr.contains("error: predicate failure"));
 
     let json = fs::read_to_string(&report).expect("report should exist");
-    assert!(json.contains("\"status\":\"failed\""));
-    assert!(json.contains("\"failure_sample\":{\"case_index\":0"));
-    assert!(json.contains("\"hex_bytes\":\""));
-    assert!(json.contains("\"exit_code\":1"));
+    assert_eq!(
+        json,
+        format!(
+            concat!(
+                "{{\"tool_version\":\"{}\",",
+                "\"command\":\"ci tokenizer\",",
+                "\"seed\":\"096875ea372a1b80bcccb9d8f3f10dde3e0f65e6facc94bf477e3b9531c7aa51\",",
+                "\"profile_hash\":null,",
+                "\"unicode_mode\":\"mixed\",",
+                "\"output_kind\":\"valid-text\",",
+                "\"case_count\":2,",
+                "\"harness_command\":\"{} unknown\",",
+                "\"status\":\"failed\",",
+                "\"failure_sample\":{{",
+                "\"case_index\":0,",
+                "\"byte_count\":13,",
+                "\"hex_bytes\":\"e2808f72746c206d61726b6572\",",
+                "\"exit_code\":1",
+                "}}}}"
+            ),
+            env!("CARGO_PKG_VERSION"),
+            json_escape_for_test(&harness.display().to_string())
+        )
+    );
 }
 
 #[test]
