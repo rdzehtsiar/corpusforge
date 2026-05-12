@@ -13,6 +13,18 @@ generated corpus output.
 - `seed_1337_weighted_choice_sequence.txt`: 16 indexes from
   `WeightedTable::new([1, 3, 6, 10])` using integer seed `1337`,
   `DOMAIN_NGRAM`, and context bytes `weighted`.
+- `seed_1337_unicode_valid_text_grapheme.hex`: 12 valid-text grapheme cases
+  from `generate_valid_text(&seed, UnicodeMode::Grapheme, 12)` using integer
+  seed `1337`, rendered as lowercase UTF-8 byte hex.
+- `seed_1337_unicode_valid_text_mixed.hex`: 12 valid-text mixed cases from
+  `generate_valid_text(&seed, UnicodeMode::Mixed, 12)` using integer seed
+  `1337`, rendered as lowercase UTF-8 byte hex.
+- `seed_1337_unicode_raw_bytes_invalid_utf8.hex`: 12 raw-byte invalid UTF-8
+  cases from `generate_raw_bytes(&seed, UnicodeMode::InvalidUtf8, 12)` using
+  integer seed `1337`, rendered as lowercase hex.
+- `seed_1337_unicode_raw_bytes_mixed.hex`: 12 raw-byte mixed cases from
+  `generate_raw_bytes(&seed, UnicodeMode::Mixed, 12)` using integer seed
+  `1337`, rendered as lowercase hex.
 
 Golden files must remain deterministic, small, human-readable, and documented
 with the API, command, or fixture source that produced them. Do not add broad

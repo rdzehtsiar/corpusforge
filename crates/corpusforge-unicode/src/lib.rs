@@ -354,6 +354,7 @@ mod tests {
         GRAPHEME_FIXTURES, NORMALIZATION_FIXTURES, VALID_TEXT_FAMILIES, ZERO_WIDTH_FIXTURES,
     };
     use corpusforge_core::seed::MasterSeed;
+    use std::str::FromStr;
 
     const TEST_SEED: MasterSeed = MasterSeed::from_bytes([
         0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
@@ -477,6 +478,50 @@ mod tests {
             .expect("raw-byte generation should succeed");
 
         assert_eq!(left, right);
+    }
+
+    #[test]
+    fn seed_1337_valid_text_grapheme_matches_golden() {
+        let output = generate_valid_text(&seed_1337(), UnicodeMode::Grapheme, 12)
+            .expect("grapheme valid-text generation should succeed");
+
+        assert_eq!(
+            bytes_to_hex(output.as_bytes()),
+            fixture("seed_1337_unicode_valid_text_grapheme.hex")
+        );
+    }
+
+    #[test]
+    fn seed_1337_valid_text_mixed_matches_golden() {
+        let output = generate_valid_text(&seed_1337(), UnicodeMode::Mixed, 12)
+            .expect("mixed valid-text generation should succeed");
+
+        assert_eq!(
+            bytes_to_hex(output.as_bytes()),
+            fixture("seed_1337_unicode_valid_text_mixed.hex")
+        );
+    }
+
+    #[test]
+    fn seed_1337_raw_bytes_invalid_utf8_matches_golden_hex() {
+        let output = generate_raw_bytes(&seed_1337(), UnicodeMode::InvalidUtf8, 12)
+            .expect("invalid-utf8 raw-byte generation should succeed");
+
+        assert_eq!(
+            bytes_to_hex(&output),
+            fixture("seed_1337_unicode_raw_bytes_invalid_utf8.hex")
+        );
+    }
+
+    #[test]
+    fn seed_1337_raw_bytes_mixed_matches_golden_hex() {
+        let output = generate_raw_bytes(&seed_1337(), UnicodeMode::Mixed, 12)
+            .expect("mixed raw-byte generation should succeed");
+
+        assert_eq!(
+            bytes_to_hex(&output),
+            fixture("seed_1337_unicode_raw_bytes_mixed.hex")
+        );
     }
 
     #[test]
@@ -626,6 +671,44 @@ mod tests {
                     .any(|fixtures| fixtures.contains(&case)),
                 "mixed case should come from a valid-text family: {case:?}"
             );
+        }
+    }
+
+    fn seed_1337() -> MasterSeed {
+        MasterSeed::from_str("1337").expect("integer seed 1337 should parse")
+    }
+
+    fn bytes_to_hex(bytes: &[u8]) -> String {
+        let mut hex = String::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            hex.push_str(&format!("{byte:02x}"));
+        }
+        hex
+    }
+
+    fn fixture(name: &str) -> &'static str {
+        match name {
+            "seed_1337_unicode_valid_text_grapheme.hex" => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/golden/seed_1337_unicode_valid_text_grapheme.hex"
+            ))
+            .trim(),
+            "seed_1337_unicode_valid_text_mixed.hex" => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/golden/seed_1337_unicode_valid_text_mixed.hex"
+            ))
+            .trim(),
+            "seed_1337_unicode_raw_bytes_invalid_utf8.hex" => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/golden/seed_1337_unicode_raw_bytes_invalid_utf8.hex"
+            ))
+            .trim(),
+            "seed_1337_unicode_raw_bytes_mixed.hex" => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/golden/seed_1337_unicode_raw_bytes_mixed.hex"
+            ))
+            .trim(),
+            _ => panic!("unknown golden fixture '{name}'"),
         }
     }
 }
