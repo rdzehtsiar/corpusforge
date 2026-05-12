@@ -15,9 +15,13 @@ CorpusForge is being developed in milestones. The roadmap is directional and sho
 | 9 | CI Integration, Benchmarks, and Quality Gates | CI templates, report formats, performance baselines, and regression harnesses. |
 | 10 | Packaging, Documentation, and OSS Launch | Static binaries, signed releases, docs, examples, and launch-ready credibility assets. |
 
-## Current Milestone
+## Current State
 
-Milestone 1 is limited to repository foundation, documentation, agent controls, CI, fixtures, and the CLI skeleton. It does not include generation, `.cff` implementation, Unicode mutation, n-gram training, shrinking, packaging, or release automation.
+Milestones 1 through 3 have established the Rust workspace foundation, deterministic core primitives, CLI skeleton, and `.cff` v0 fixture profile workflows. Milestone 4 has started at the library level with deterministic fixture-based Unicode valid-text and raw-byte APIs in `corpusforge-unicode`.
+
+Implemented Unicode modes are `grapheme`, `bidi`, `zero-width`, `emoji`, `normalization`, `mixed`, and `invalid-utf8`. The valid-text API rejects `invalid-utf8`; invalid UTF-8 is supported only through the raw-byte API.
+
+Milestone 4 is not CLI-integrated yet. CLI `gen`, `shrink`, `replay`, and `ci` behavior remains placeholder-only. N-gram generation, shrinker behavior, replay metadata, CI reports, packaging, and release automation remain planned.
 
 ## Compatibility Note
 

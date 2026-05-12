@@ -17,8 +17,10 @@ same tool version
 The current implementation covers part of that contract: master seed parsing,
 domain-separated deterministic streams, integer bounded sampling,
 integer-only weighted choice, `.cff` v0 serialization, verification, hashing,
-and deterministic fixture profile compilation. Corpus generation, Unicode
-mutation, replay, shrinking, and CI reports are still not implemented.
+deterministic fixture profile compilation, and fixture-based Unicode valid-text
+and raw-byte generation in `corpusforge-unicode`. CLI corpus generation,
+profile-driven Unicode generation, replay, shrinking, and CI reports are still
+not implemented.
 
 All v0 deterministic behavior is unstable until explicitly versioned with a
 compatibility guarantee and supporting tests.
@@ -107,12 +109,37 @@ Small golden fixtures under `tests/golden` currently cover:
 - seed `1337`, `DOMAIN_UNICODE`, first 32 stream bytes as hex
 - seed `1337`, `DOMAIN_NGRAM`, context `weighted`,
   `WeightedTable::new([1, 3, 6, 10])`, first 16 selected indexes
+- seed `1337`, `generate_valid_text(..., UnicodeMode::Grapheme, 12)` as hex
+- seed `1337`, `generate_valid_text(..., UnicodeMode::Mixed, 12)` as hex
+- seed `1337`, `generate_raw_bytes(..., UnicodeMode::InvalidUtf8, 12)` as hex
+- seed `1337`, `generate_raw_bytes(..., UnicodeMode::Mixed, 12)` as hex
 
-These fixtures assert the current core APIs exactly. Additional `.cff` and
-profile fixtures cover current v0 serialization, verification, hashing, and
-deterministic fixture profile compilation. They do not claim corpus generation,
-Unicode mutation, replay, shrink, broad CLI output, report, or cross-version
-format compatibility.
+These fixtures assert the current core and Unicode fixture APIs exactly.
+Additional `.cff` and profile fixtures cover current v0 serialization,
+verification, hashing, and deterministic fixture profile compilation. They do
+not claim CLI corpus generation, broad Unicode compatibility, replay, shrink,
+broad CLI output, report, or cross-version format compatibility.
+
+## Unicode Output Boundaries
+
+`corpusforge-unicode` currently implements deterministic fixture-based
+generation at two explicit output boundaries:
+
+- `generate_valid_text` returns valid UTF-8 text and supports `grapheme`,
+  `bidi`, `zero-width`, `emoji`, `normalization`, and `mixed`.
+- `generate_raw_bytes` returns bytes and supports `grapheme`, `bidi`,
+  `zero-width`, `emoji`, `normalization`, `mixed`, and `invalid-utf8`.
+
+The `invalid-utf8` mode is rejected for valid-text output and is emitted only
+through raw-byte generation. Valid-text modes produce UTF-8 bytes when requested
+through the raw-byte API. `mixed` valid-text output samples only valid-text
+fixture families, while `mixed` raw-byte output can include invalid UTF-8
+fixtures.
+
+This is a fixture model, not a complete Unicode mutation engine. It covers
+representative adversarial fixture families for the implemented modes, but it
+does not establish broad parser, tokenizer, renderer, or Unicode conformance
+coverage.
 
 ## CLI Status
 
@@ -123,8 +150,9 @@ The CLI currently exposes planned command names and parses common flags such as
 Profile build, inspect, and verify command behavior exists for implemented
 `.cff` v0 fixture profile workflows. Command execution for generation,
 shrinking, replay, and CI reporting is not implemented. CLI generation flags do
-not yet connect to deterministic stream construction, weighted sampling, profile
-loading for generation, or output generation.
+not yet connect to deterministic stream construction, weighted sampling,
+Unicode fixture generation, profile loading for generation, or output
+generation.
 
 ## Offline and Privacy Defaults
 
@@ -139,11 +167,11 @@ explicit approval and must not affect the default offline binary.
 
 Unsupported behavior includes:
 
-- deterministic corpus output
+- CLI deterministic corpus output
 - stable `.cff` cross-version compatibility guarantees
-- Unicode mutation modes
+- broad Unicode mutation or compatibility guarantees beyond the fixture APIs
 - weighted n-gram corpus generation
-- byte-level invalid UTF-8 generation
+- CLI byte-level invalid UTF-8 generation
 - replay from seed/profile/range metadata
 - shrinking or predicate execution
 - machine-readable CI reports

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 [package]
 name = "corpusforge-unicode"
 version = "0.1.0"
@@ -5,7 +7,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "CorpusForge Unicode adversarial layer placeholders"
+description = "Fixture-based Unicode adversarial generation for CorpusForge"
 
 [dependencies]
 corpusforge-core = { path = "../corpusforge-core" }
