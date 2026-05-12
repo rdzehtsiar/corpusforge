@@ -8,7 +8,8 @@ use corpusforge_core::{CorpusForgeError, Result};
 use corpusforge_ngram::{ByteBigramModel, ENGINE_NAME, ENGINE_VERSION};
 use corpusforge_profile::compile_path;
 use corpusforge_tokenizer::{
-    generate_tokenizer_cases, TokenizerCaseSpec, UnicodeMode, UnicodeOutputKind,
+    generate_tokenizer_cases, run_stdin_harness, HarnessCommand, HarnessStatus, TokenizerCaseSpec,
+    TokenizerReport, UnicodeMode, UnicodeOutputKind,
 };
 use std::ffi::OsString;
 use std::fs::{self, File};
@@ -69,6 +70,7 @@ enum ParsedCommand {
     Version,
     CommandHelp(&'static CommandSpec),
     ExecutePlaceholder(&'static CommandSpec),
+    ExecuteCiTokenizer(CiTokenizerOptions),
     ExecuteGen(GenOptions),
     ExecuteProfile(ProfileCommand),
     ExecuteVerifyAlias(ProfileFileOptions),
@@ -126,6 +128,17 @@ struct UnicodeGenOptions {
     seed_source: SeedSource,
     out: Option<PathBuf>,
     quiet: bool,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct CiTokenizerOptions {
+    mode: UnicodeMode,
+    output_kind: UnicodeOutputKind,
+    case_count: usize,
+    seed_source: SeedSource,
+    command: PathBuf,
+    args: Vec<String>,
+    report_out: PathBuf,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -241,7 +254,15 @@ where
             })?;
 
             let remaining = args.collect::<Vec<_>>();
-            if contains_help_flag(&remaining) {
+            if command.name == "ci" && first_arg_is(&remaining, "tokenizer") {
+                let tokenizer_args = &remaining[1..];
+                if contains_only_help_flag(tokenizer_args) {
+                    Ok(ParsedCommand::CommandHelp(command))
+                } else {
+                    parse_ci_tokenizer_options(tokenizer_args)
+                        .map(ParsedCommand::ExecuteCiTokenizer)
+                }
+            } else if contains_help_flag(&remaining) {
                 Ok(ParsedCommand::CommandHelp(command))
             } else if command.name == "profile" {
                 parse_profile_command(&remaining).map(ParsedCommand::ExecuteProfile)
@@ -262,8 +283,17 @@ fn contains_help_flag(args: &[OsString]) -> bool {
     args.iter().any(|arg| arg == "--help" || arg == "-h")
 }
 
+fn contains_only_help_flag(args: &[OsString]) -> bool {
+    matches!(args, [arg] if arg == "--help" || arg == "-h")
+}
+
 fn contains_profile_option(args: &[OsString]) -> bool {
     args.iter().any(|arg| arg == "--profile")
+}
+
+fn first_arg_is(args: &[OsString], expected: &str) -> bool {
+    args.first()
+        .is_some_and(|arg| arg.to_string_lossy() == expected)
 }
 
 fn parse_profile_command(args: &[OsString]) -> Result<ProfileCommand> {
@@ -642,6 +672,150 @@ fn parse_gen_options(args: &[OsString]) -> Result<GenOptions> {
     }))
 }
 
+fn parse_ci_tokenizer_options(args: &[OsString]) -> Result<CiTokenizerOptions> {
+    let command_spec = find_command("ci").expect("ci command should exist");
+    let mut unicode_mode = None;
+    let mut output_kind = None;
+    let mut case_count = None;
+    let mut seed_source = None;
+    let mut command = None;
+    let mut harness_args = Vec::new();
+    let mut report_out = None;
+    let mut index = 0;
+
+    while index < args.len() {
+        let flag = args[index].to_string_lossy();
+
+        match flag.as_ref() {
+            "--unicode" => {
+                if unicode_mode.is_some() {
+                    return Err(CorpusForgeError::invalid_argument(
+                        "duplicate option `--unicode`",
+                    ));
+                }
+                let value = take_value(command_spec, args, index, "--unicode")?;
+                unicode_mode = Some(UnicodeMode::from_str(&value)?);
+                index += 2;
+            }
+            "--output-kind" => {
+                if output_kind.is_some() {
+                    return Err(CorpusForgeError::invalid_argument(
+                        "duplicate option `--output-kind`",
+                    ));
+                }
+                let value = take_value(command_spec, args, index, "--output-kind")?;
+                output_kind = Some(UnicodeOutputKind::from_str(&value)?);
+                index += 2;
+            }
+            "--cases" => {
+                if case_count.is_some() {
+                    return Err(CorpusForgeError::invalid_argument(
+                        "duplicate option `--cases`",
+                    ));
+                }
+                let value = take_value(command_spec, args, index, "--cases")?;
+                case_count = Some(parse_case_count(&value)?);
+                index += 2;
+            }
+            "--seed" => {
+                if let Some(existing) = seed_source_name(&seed_source) {
+                    return Err(seed_conflict("--seed", existing));
+                }
+                let seed = take_value(command_spec, args, index, "--seed")?;
+                validate_non_empty(&seed, "--seed")?;
+                seed_source = Some(SeedSource::Inline(seed));
+                index += 2;
+            }
+            "--seed-file" => {
+                if let Some(existing) = seed_source_name(&seed_source) {
+                    return Err(seed_conflict("--seed-file", existing));
+                }
+                seed_source = Some(SeedSource::File(take_path_value(
+                    "ci",
+                    args,
+                    index,
+                    "--seed-file",
+                )?));
+                index += 2;
+            }
+            "--command" => {
+                if command.is_some() {
+                    return Err(CorpusForgeError::invalid_argument(
+                        "duplicate option `--command`",
+                    ));
+                }
+                command = Some(take_path_value("ci", args, index, "--command")?);
+                index += 2;
+            }
+            "--arg" => {
+                harness_args.push(take_raw_string_value("ci", args, index, "--arg")?);
+                index += 2;
+            }
+            "--report-out" => {
+                if report_out.is_some() {
+                    return Err(CorpusForgeError::invalid_argument(
+                        "duplicate option `--report-out`",
+                    ));
+                }
+                report_out = Some(take_path_value("ci", args, index, "--report-out")?);
+                index += 2;
+            }
+            "-h" | "--help" => {
+                return Err(CorpusForgeError::invalid_argument(
+                    "help must be requested without other arguments; run `corpusforge ci --help`",
+                ));
+            }
+            other if other.starts_with('-') => {
+                return Err(CorpusForgeError::invalid_argument(format!(
+                    "unknown option `{other}` for `ci tokenizer`; run `corpusforge ci --help`"
+                )));
+            }
+            other => {
+                return Err(CorpusForgeError::invalid_argument(format!(
+                    "unexpected argument `{other}` for `ci tokenizer`; run `corpusforge ci --help`"
+                )));
+            }
+        }
+    }
+
+    let mode = unicode_mode.ok_or_else(|| {
+        CorpusForgeError::invalid_argument("missing required option `--unicode` for `ci tokenizer`")
+    })?;
+    let output_kind = output_kind.ok_or_else(|| {
+        CorpusForgeError::invalid_argument(
+            "missing required option `--output-kind` for `ci tokenizer`",
+        )
+    })?;
+    let case_count = case_count.ok_or_else(|| {
+        CorpusForgeError::invalid_argument("missing required option `--cases` for `ci tokenizer`")
+    })?;
+    let seed_source = seed_source.ok_or_else(|| {
+        CorpusForgeError::invalid_argument(
+            "missing required seed source for `ci tokenizer`; use exactly one of `--seed` or `--seed-file`",
+        )
+    })?;
+    let command = command.ok_or_else(|| {
+        CorpusForgeError::invalid_argument("missing required option `--command` for `ci tokenizer`")
+    })?;
+    let report_out = report_out.ok_or_else(|| {
+        CorpusForgeError::invalid_argument(
+            "missing required option `--report-out` for `ci tokenizer`",
+        )
+    })?;
+
+    TokenizerCaseSpec::new(mode, output_kind, case_count)?;
+
+    Ok(CiTokenizerOptions {
+        mode,
+        output_kind,
+        case_count,
+        seed_source,
+        command,
+        args: harness_args,
+        report_out,
+    })
+}
+
 fn seed_source_name(seed_source: &Option<SeedSource>) -> Option<&'static str> {
     match seed_source {
         Some(SeedSource::Inline(_)) => Some("--seed"),
@@ -682,6 +856,28 @@ fn take_path_value(
     Ok(PathBuf::from(value.as_os_str()))
 }
 
+fn take_raw_string_value(
+    command: &str,
+    args: &[OsString],
+    flag_index: usize,
+    flag: &str,
+) -> Result<String> {
+    let Some(value) = args.get(flag_index + 1) else {
+        return Err(CorpusForgeError::invalid_argument(format!(
+            "missing value for `{flag}`; run `corpusforge {command} --help`"
+        )));
+    };
+
+    let value = value.to_string_lossy();
+    if value.is_empty() {
+        return Err(CorpusForgeError::invalid_argument(format!(
+            "`{flag}` requires a non-empty value"
+        )));
+    }
+
+    Ok(value.into_owned())
+}
+
 fn execute_command(
     command: ParsedCommand,
     stdout: &mut impl std::io::Write,
@@ -693,10 +889,45 @@ fn execute_command(
         ParsedCommand::ExecutePlaceholder(command) => Err(CorpusForgeError::not_implemented(
             format!("{} command execution", command.name),
         )),
+        ParsedCommand::ExecuteCiTokenizer(options) => execute_ci_tokenizer(options).map(Some),
         ParsedCommand::ExecuteGen(options) => execute_gen(options, stdout),
         ParsedCommand::ExecuteProfile(command) => execute_profile_command(command).map(Some),
         ParsedCommand::ExecuteVerifyAlias(options) => execute_profile_verify(options).map(Some),
     }
+}
+
+fn execute_ci_tokenizer(options: CiTokenizerOptions) -> Result<String> {
+    let seed = read_seed(&options.seed_source)?;
+    let spec = TokenizerCaseSpec::new(options.mode, options.output_kind, options.case_count)?;
+    let cases = generate_tokenizer_cases(&seed, spec)?;
+    let harness_command = HarnessCommand::new(options.command.clone(), options.args.clone());
+    let run = run_stdin_harness(&harness_command, &cases);
+    let status = run.status();
+    let report = TokenizerReport::new(
+        env!("CARGO_PKG_VERSION"),
+        "ci tokenizer",
+        &seed,
+        None,
+        spec,
+        &harness_command,
+        run,
+    );
+
+    fs::write(&options.report_out, report.to_json())?;
+
+    if status == HarnessStatus::Failed {
+        return Err(CorpusForgeError::predicate_failure(
+            "tokenizer harness failed; see `--report-out` for the first failing sample",
+        ));
+    }
+
+    Ok(format!(
+        "tokenizer ci passed\nseed: {seed}\nunicode_mode: {mode}\noutput_kind: {output_kind}\ncase_count: {case_count}\nreport_out: {report_out}",
+        mode = options.mode,
+        output_kind = options.output_kind,
+        case_count = options.case_count,
+        report_out = options.report_out.display()
+    ))
 }
 
 fn execute_gen(options: GenOptions, stdout: &mut impl std::io::Write) -> Result<Option<String>> {
@@ -1259,12 +1490,24 @@ fn command_help(command: &CommandSpec) -> String {
         return profile_help(command);
     }
 
+    if command.name == "ci" {
+        return ci_help(command);
+    }
+
     if command.name == "gen" {
         return gen_help(command);
     }
 
     format!(
         "corpusforge {name}\n\n{summary}\n\nUSAGE:\n    corpusforge {name} [OPTIONS]\n\nOPTIONS:\n    --seed <seed>                 Use an inline deterministic seed\n    --seed-file <path>            Read the deterministic seed from a file\n    --profile <path>              Read a CorpusForge profile path\n    --out <path>                  Write generated output to a path\n    --bytes <N>                   Set output size in bytes; supports KB, MB, GB\n    --determinism <mode>          Determinism mode: strict or relaxed\n    --metadata-out <path>         Write machine-readable metadata to a path\n    --quiet                       Reduce human-readable output\n    --json                        Emit machine-readable JSON where supported\n    -h, --help                    Print help\n\nEXAMPLES:\n    corpusforge {name} --seed 42 --profile profiles/smoke.cff --bytes 64KB\n    corpusforge {name} --seed-file seed.txt --determinism strict --metadata-out report.json --json\n\nSTATUS:\n    Planned for a later milestone; execution currently returns NotImplemented.",
+        name = command.name,
+        summary = command.summary
+    )
+}
+
+fn ci_help(command: &CommandSpec) -> String {
+    format!(
+        "corpusforge {name}\n\n{summary}\n\nUSAGE:\n    corpusforge ci tokenizer --unicode <mode> --output-kind <valid-text|raw-bytes> --cases <N> (--seed <seed> | --seed-file <path>) --command <path> [--arg <value> ...] --report-out <path>\n    corpusforge ci [OPTIONS]\n\nSUBCOMMANDS:\n    tokenizer    Run an external tokenizer harness once per generated Unicode sample\n\nOPTIONS:\n    --unicode <mode>              Generate built-in tokenizer Unicode stress cases\n    --output-kind <kind>          Unicode output boundary: valid-text or raw-bytes\n    --cases <N>                   Number of Unicode tokenizer cases to generate\n    --seed <seed>                 Use an inline deterministic seed\n    --seed-file <path>            Read the deterministic seed from a 32-byte file\n    --command <path>              Harness executable path; invoked directly without a shell\n    --arg <value>                 Literal harness argument; may be repeated and preserves order\n    --report-out <path>           Write stable tokenizer report JSON to a path\n    --profile <path>              Placeholder profile path option for later CI checks\n    --out <path>                  Placeholder output path option for later CI checks\n    --bytes <N>                   Placeholder output size in bytes; supports KB, MB, GB\n    --determinism <mode>          Placeholder determinism mode: strict or relaxed\n    --metadata-out <path>         Placeholder machine-readable metadata path\n    --quiet                       Placeholder quiet mode for later CI checks\n    --json                        Placeholder machine-readable output mode\n    -h, --help                    Print help\n\nUNICODE MODES:\n    grapheme, bidi, zero-width, emoji, normalization, mixed, invalid-utf8\n\nREPORT:\n    Writes TokenizerReport JSON on both pass and fail. The command field is `ci tokenizer`, and profile_hash is null.",
         name = command.name,
         summary = command.summary
     )
@@ -1305,6 +1548,7 @@ fn build_profile() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{run, CliOutcome};
+    use std::io::{self, Read};
 
     #[test]
     fn top_level_help_lists_commands() {
@@ -1354,6 +1598,16 @@ mod tests {
                 assert!(help.contains("inspect --profile <path>"));
                 assert!(help.contains("verify --profile <path>"));
                 assert!(help.contains("corpusforge verify --profile <path>"));
+            } else if command == "ci" {
+                assert!(help.contains("corpusforge ci tokenizer"));
+                assert!(help.contains("--unicode <mode>"));
+                assert!(help.contains("--output-kind <kind>"));
+                assert!(help.contains("--cases <N>"));
+                assert!(help.contains("--command <path>"));
+                assert!(help.contains("--arg <value>"));
+                assert!(help.contains("--report-out <path>"));
+                assert!(help.contains("TokenizerReport"));
+                assert!(!help.contains("Planned for a later milestone"));
             } else {
                 assert!(help.contains("--seed <seed>"));
                 assert!(help.contains("--seed-file <path>"));
@@ -1434,6 +1688,186 @@ mod tests {
 
         assert_eq!(error.category(), "not_implemented");
         assert!(error.to_string().contains("replay command execution"));
+    }
+
+    #[test]
+    fn ci_tokenizer_requires_all_options() {
+        let cases = [
+            (
+                &["corpusforge", "ci", "tokenizer", "--cases", "1"][..],
+                "missing required option `--unicode`",
+            ),
+            (
+                &["corpusforge", "ci", "tokenizer", "--unicode", "mixed"][..],
+                "missing required option `--output-kind`",
+            ),
+            (
+                &[
+                    "corpusforge",
+                    "ci",
+                    "tokenizer",
+                    "--unicode",
+                    "mixed",
+                    "--output-kind",
+                    "valid-text",
+                ][..],
+                "missing required option `--cases`",
+            ),
+            (
+                &[
+                    "corpusforge",
+                    "ci",
+                    "tokenizer",
+                    "--unicode",
+                    "mixed",
+                    "--output-kind",
+                    "valid-text",
+                    "--cases",
+                    "1",
+                ][..],
+                "missing required seed source",
+            ),
+            (
+                &[
+                    "corpusforge",
+                    "ci",
+                    "tokenizer",
+                    "--unicode",
+                    "mixed",
+                    "--output-kind",
+                    "valid-text",
+                    "--cases",
+                    "1",
+                    "--seed",
+                    "1337",
+                ][..],
+                "missing required option `--command`",
+            ),
+            (
+                &[
+                    "corpusforge",
+                    "ci",
+                    "tokenizer",
+                    "--unicode",
+                    "mixed",
+                    "--output-kind",
+                    "valid-text",
+                    "--cases",
+                    "1",
+                    "--seed",
+                    "1337",
+                    "--command",
+                    "tokenizer-harness",
+                ][..],
+                "missing required option `--report-out`",
+            ),
+        ];
+
+        for (args, expected) in cases {
+            let CliOutcome::Failure(error) = run(args) else {
+                panic!("{args:?} should fail");
+            };
+
+            assert_eq!(error.category(), "invalid_argument");
+            assert!(
+                error.to_string().contains(expected),
+                "{error} should contain {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn ci_tokenizer_pass_writes_stable_report_and_preserves_arg_order() {
+        let report = temp_report_path("ci-tokenizer-pass");
+        let helper = std::env::current_exe().expect("test executable should exist");
+        let helper_text = helper.display().to_string();
+        let report_text = report.display().to_string();
+
+        let outcome = run([
+            "corpusforge",
+            "ci",
+            "tokenizer",
+            "--unicode",
+            "grapheme",
+            "--output-kind",
+            "valid-text",
+            "--cases",
+            "2",
+            "--seed",
+            "1337",
+            "--command",
+            &helper_text,
+            "--arg",
+            "--ignored",
+            "--arg",
+            "--exact",
+            "--arg",
+            "tests::ci_harness_accepts_nonempty_input",
+            "--report-out",
+            &report_text,
+        ]);
+
+        let CliOutcome::Success(summary) = outcome else {
+            panic!("ci tokenizer should pass");
+        };
+
+        assert!(summary.contains("tokenizer ci passed"));
+        let json = std::fs::read_to_string(&report).expect("report should be written");
+        assert!(json.contains("\"command\":\"ci tokenizer\""));
+        assert!(json.contains("\"profile_hash\":null"));
+        assert!(json.contains("\"unicode_mode\":\"grapheme\""));
+        assert!(json.contains("\"status\":\"passed\""));
+        assert!(json.contains("\"failure_sample\":null"));
+        assert!(json.contains(&format!(
+            "\"harness_command\":\"{} --ignored --exact tests::ci_harness_accepts_nonempty_input\"",
+            json_escape_for_test(&helper_text)
+        )));
+
+        let _ = std::fs::remove_file(report);
+    }
+
+    #[test]
+    fn ci_tokenizer_failure_writes_report_before_nonzero_outcome() {
+        let report = temp_report_path("ci-tokenizer-fail");
+        let helper = std::env::current_exe().expect("test executable should exist");
+        let helper_text = helper.display().to_string();
+        let report_text = report.display().to_string();
+
+        let outcome = run([
+            "corpusforge",
+            "ci",
+            "tokenizer",
+            "--unicode",
+            "mixed",
+            "--output-kind",
+            "valid-text",
+            "--cases",
+            "2",
+            "--seed",
+            "1337",
+            "--command",
+            &helper_text,
+            "--arg",
+            "--ignored",
+            "--arg",
+            "--exact",
+            "--arg",
+            "tests::ci_harness_rejects_all_input",
+            "--report-out",
+            &report_text,
+        ]);
+
+        let CliOutcome::Failure(error) = outcome else {
+            panic!("ci tokenizer should fail when harness fails");
+        };
+
+        assert_eq!(error.category(), "predicate_failure");
+        let json = std::fs::read_to_string(&report).expect("report should be written");
+        assert!(json.contains("\"status\":\"failed\""));
+        assert!(json.contains("\"failure_sample\":{\"case_index\":0"));
+        assert!(json.contains("\"exit_code\":101"));
+
+        let _ = std::fs::remove_file(report);
     }
 
     #[test]
@@ -1777,6 +2211,42 @@ mod tests {
 
         assert_eq!(error.category(), "invalid_profile");
         assert!(error.to_string().contains("unknown command"));
+    }
+
+    #[test]
+    #[ignore]
+    fn ci_harness_accepts_nonempty_input() {
+        let mut input = Vec::new();
+        io::stdin()
+            .read_to_end(&mut input)
+            .expect("helper should read stdin");
+
+        assert!(!input.is_empty());
+    }
+
+    #[test]
+    #[ignore]
+    fn ci_harness_rejects_all_input() {
+        let mut input = Vec::new();
+        io::stdin()
+            .read_to_end(&mut input)
+            .expect("helper should read stdin");
+
+        assert!(input.is_empty());
+    }
+
+    fn temp_report_path(name: &str) -> std::path::PathBuf {
+        std::env::current_dir()
+            .expect("current directory should be available")
+            .join("target")
+            .join(format!(
+                "corpusforge-cli-{name}-{}.json",
+                std::process::id()
+            ))
+    }
+
+    fn json_escape_for_test(value: &str) -> String {
+        value.replace('\\', "\\\\").replace('"', "\\\"")
     }
 
     fn bytes_to_hex(bytes: &[u8]) -> String {

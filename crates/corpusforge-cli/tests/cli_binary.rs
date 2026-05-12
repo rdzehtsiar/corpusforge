@@ -42,6 +42,15 @@ fn binary_command_help_exits_successfully() {
             assert!(stdout.contains("inspect"));
             assert!(stdout.contains("verify"));
             assert!(stdout.contains("--out <path>"));
+        } else if command == "ci" {
+            assert!(stdout.contains("corpusforge ci tokenizer"));
+            assert!(stdout.contains("--unicode <mode>"));
+            assert!(stdout.contains("--output-kind <kind>"));
+            assert!(stdout.contains("--cases <N>"));
+            assert!(stdout.contains("--command <path>"));
+            assert!(stdout.contains("--arg <value>"));
+            assert!(stdout.contains("--report-out <path>"));
+            assert!(stdout.contains("TokenizerReport"));
         } else {
             assert!(stdout.contains("--seed <seed>"));
             assert!(stdout.contains("--seed-file <path>"));
@@ -121,6 +130,195 @@ fn binary_common_flags_parse_before_placeholder_execution() {
     let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
     assert!(stderr.contains("error: not implemented"));
     assert!(stderr.contains("replay command execution"));
+}
+
+#[test]
+fn binary_ci_tokenizer_writes_passing_report_and_preserves_arg_order() {
+    let temp = TestDir::new("ci-tokenizer-pass");
+    let report = temp.path().join("report.json");
+    let harness = std::env::var_os("CARGO_BIN_EXE_corpusforge")
+        .map(PathBuf::from)
+        .expect("corpusforge binary path should be available");
+
+    let output = corpusforge()
+        .args([
+            "ci",
+            "tokenizer",
+            "--unicode",
+            "grapheme",
+            "--output-kind",
+            "valid-text",
+            "--cases",
+            "2",
+            "--seed",
+            "1337",
+            "--command",
+        ])
+        .arg(&harness)
+        .args([
+            "--arg",
+            "--version",
+            "--arg",
+            "--literal-second",
+            "--report-out",
+        ])
+        .arg(&report)
+        .output()
+        .expect("binary should run");
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    assert!(stdout.contains("tokenizer ci passed"));
+    assert!(stdout.contains("case_count: 2"));
+
+    let json = fs::read_to_string(&report).expect("report should exist");
+    assert!(json.contains("\"command\":\"ci tokenizer\""));
+    assert!(json.contains("\"profile_hash\":null"));
+    assert!(json.contains("\"unicode_mode\":\"grapheme\""));
+    assert!(json.contains("\"output_kind\":\"valid-text\""));
+    assert!(json.contains("\"case_count\":2"));
+    assert!(json.contains("\"status\":\"passed\""));
+    assert!(json.contains("\"failure_sample\":null"));
+    assert!(json.contains(&format!(
+        "\"harness_command\":\"{} --version --literal-second\"",
+        json_escape_for_test(&harness.display().to_string())
+    )));
+}
+
+#[test]
+fn binary_ci_tokenizer_treats_help_arg_as_literal_harness_arg() {
+    let temp = TestDir::new("ci-tokenizer-help-arg");
+    let harness = std::env::var_os("CARGO_BIN_EXE_corpusforge")
+        .map(PathBuf::from)
+        .expect("corpusforge binary path should be available");
+
+    for help_arg in ["--help", "-h"] {
+        let report = temp.path().join(format!("report-{help_arg}.json"));
+        let output = corpusforge()
+            .args([
+                "ci",
+                "tokenizer",
+                "--unicode",
+                "grapheme",
+                "--output-kind",
+                "valid-text",
+                "--cases",
+                "1",
+                "--seed",
+                "1337",
+                "--command",
+            ])
+            .arg(&harness)
+            .args(["--arg", help_arg, "--report-out"])
+            .arg(&report)
+            .output()
+            .expect("binary should run");
+
+        assert!(
+            output.status.success(),
+            "--arg {help_arg} should be passed to the harness"
+        );
+        assert!(output.stderr.is_empty());
+
+        let json = fs::read_to_string(&report).expect("report should exist");
+        assert!(json.contains("\"status\":\"passed\""));
+        assert!(json.contains(&format!(
+            "\"harness_command\":\"{} {help_arg}\"",
+            json_escape_for_test(&harness.display().to_string())
+        )));
+    }
+}
+
+#[test]
+fn binary_ci_tokenizer_writes_failing_report_with_failure_sample() {
+    let temp = TestDir::new("ci-tokenizer-fail");
+    let report = temp.path().join("report.json");
+    let harness = std::env::var_os("CARGO_BIN_EXE_corpusforge")
+        .map(PathBuf::from)
+        .expect("corpusforge binary path should be available");
+
+    let output = corpusforge()
+        .args([
+            "ci",
+            "tokenizer",
+            "--unicode",
+            "mixed",
+            "--output-kind",
+            "valid-text",
+            "--cases",
+            "2",
+            "--seed",
+            "1337",
+            "--command",
+        ])
+        .arg(&harness)
+        .args(["--arg", "unknown", "--report-out"])
+        .arg(&report)
+        .output()
+        .expect("binary should run");
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(stderr.contains("error: predicate failure"));
+
+    let json = fs::read_to_string(&report).expect("report should exist");
+    assert!(json.contains("\"status\":\"failed\""));
+    assert!(json.contains("\"failure_sample\":{\"case_index\":0"));
+    assert!(json.contains("\"hex_bytes\":\""));
+    assert!(json.contains("\"exit_code\":1"));
+}
+
+#[test]
+fn binary_ci_tokenizer_rejects_missing_required_args() {
+    let cases: [(Vec<OsString>, &str); 3] = [
+        (
+            vec![
+                "ci".into(),
+                "tokenizer".into(),
+                "--cases".into(),
+                "1".into(),
+            ],
+            "missing required option `--unicode`",
+        ),
+        (
+            vec![
+                "ci".into(),
+                "tokenizer".into(),
+                "--unicode".into(),
+                "mixed".into(),
+                "--output-kind".into(),
+                "valid-text".into(),
+                "--cases".into(),
+                "1".into(),
+                "--seed".into(),
+                "1337".into(),
+            ],
+            "missing required option `--command`",
+        ),
+        (
+            vec![
+                "ci".into(),
+                "tokenizer".into(),
+                "--unicode".into(),
+                "mixed".into(),
+                "--output-kind".into(),
+                "valid-text".into(),
+                "--cases".into(),
+                "1".into(),
+                "--seed".into(),
+                "1337".into(),
+                "--command".into(),
+                "tokenizer-harness".into(),
+            ],
+            "missing required option `--report-out`",
+        ),
+    ];
+
+    for (args, expected) in cases {
+        assert_invalid_argument(args, expected, expected);
+    }
 }
 
 #[test]
@@ -738,6 +936,10 @@ fn fixture(name: &str) -> &'static str {
         .trim(),
         _ => panic!("unknown golden fixture '{name}'"),
     }
+}
+
+fn json_escape_for_test(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 fn workspace_root() -> PathBuf {
