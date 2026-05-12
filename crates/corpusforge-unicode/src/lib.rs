@@ -215,6 +215,14 @@ const VALID_TEXT_FAMILIES: &[&[&str]] = &[
     NORMALIZATION_FIXTURES,
 ];
 
+const INVALID_UTF8_FIXTURES: &[&[u8]] = &[
+    b"\x80",
+    b"\xC0\xAF",
+    b"\xE2\x28\xA1",
+    b"\xF0\x28\x8C\x28",
+    b"prefix\xED\xA0\x80suffix",
+];
+
 /// Generates deterministic valid UTF-8 Unicode adversarial text cases.
 pub fn generate_valid_text(
     master_seed: &MasterSeed,
@@ -244,6 +252,35 @@ pub fn generate_valid_text(
     Ok(output)
 }
 
+/// Generates deterministic raw-byte Unicode adversarial cases.
+pub fn generate_raw_bytes(
+    master_seed: &MasterSeed,
+    mode: UnicodeMode,
+    case_count: usize,
+) -> Result<Vec<u8>> {
+    validate_mode_output(mode, UnicodeOutputKind::RawBytes)?;
+
+    if case_count == 0 {
+        return Ok(Vec::new());
+    }
+
+    let context = format!("raw-bytes/v1/{}", mode.label());
+    let mut stream =
+        DeterministicStream::from_seed_with_context(master_seed, DOMAIN_UNICODE, context);
+    let mut output = Vec::new();
+
+    for case_index in 0..case_count {
+        if case_index > 0 {
+            output.push(b'\n');
+        }
+
+        let fixture = sample_raw_byte_fixture(mode, case_index, &mut stream)?;
+        output.extend_from_slice(fixture);
+    }
+
+    Ok(output)
+}
+
 fn sample_valid_text_fixture(
     mode: UnicodeMode,
     stream: &mut DeterministicStream,
@@ -265,6 +302,42 @@ fn sample_valid_text_fixture(
     Ok(fixtures[fixture_index])
 }
 
+fn sample_raw_byte_fixture(
+    mode: UnicodeMode,
+    case_index: usize,
+    stream: &mut DeterministicStream,
+) -> Result<&'static [u8]> {
+    match mode {
+        UnicodeMode::Grapheme
+        | UnicodeMode::Bidi
+        | UnicodeMode::ZeroWidth
+        | UnicodeMode::Emoji
+        | UnicodeMode::Normalization => Ok(sample_valid_text_fixture(mode, stream)?.as_bytes()),
+        UnicodeMode::Mixed => sample_mixed_raw_byte_fixture(case_index, stream),
+        UnicodeMode::InvalidUtf8 => sample_invalid_utf8_fixture(stream),
+    }
+}
+
+fn sample_mixed_raw_byte_fixture(
+    case_index: usize,
+    stream: &mut DeterministicStream,
+) -> Result<&'static [u8]> {
+    let family_index = case_index % (VALID_TEXT_FAMILIES.len() + 1);
+
+    if family_index == VALID_TEXT_FAMILIES.len() {
+        return sample_invalid_utf8_fixture(stream);
+    }
+
+    let fixtures = VALID_TEXT_FAMILIES[family_index];
+    let fixture_index = stream.usize_below(fixtures.len())?;
+    Ok(fixtures[fixture_index].as_bytes())
+}
+
+fn sample_invalid_utf8_fixture(stream: &mut DeterministicStream) -> Result<&'static [u8]> {
+    let fixture_index = stream.usize_below(INVALID_UTF8_FIXTURES.len())?;
+    Ok(INVALID_UTF8_FIXTURES[fixture_index])
+}
+
 fn stable_labels<T: Copy + Display, const N: usize>(items: &[T; N]) -> String {
     items
         .iter()
@@ -276,9 +349,9 @@ fn stable_labels<T: Copy + Display, const N: usize>(items: &[T; N]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        crate_name, generate_valid_text, validate_mode_output, UnicodeFixtureSpec, UnicodeMode,
-        UnicodeOutputKind, BIDI_FIXTURES, EMOJI_FIXTURES, GRAPHEME_FIXTURES,
-        NORMALIZATION_FIXTURES, VALID_TEXT_FAMILIES, ZERO_WIDTH_FIXTURES,
+        crate_name, generate_raw_bytes, generate_valid_text, validate_mode_output,
+        UnicodeFixtureSpec, UnicodeMode, UnicodeOutputKind, BIDI_FIXTURES, EMOJI_FIXTURES,
+        GRAPHEME_FIXTURES, NORMALIZATION_FIXTURES, VALID_TEXT_FAMILIES, ZERO_WIDTH_FIXTURES,
     };
     use corpusforge_core::seed::MasterSeed;
 
@@ -397,6 +470,16 @@ mod tests {
     }
 
     #[test]
+    fn raw_byte_generation_is_deterministic_for_same_seed_mode_and_count() {
+        let left = generate_raw_bytes(&TEST_SEED, UnicodeMode::InvalidUtf8, 12)
+            .expect("raw-byte generation should succeed");
+        let right = generate_raw_bytes(&TEST_SEED, UnicodeMode::InvalidUtf8, 12)
+            .expect("raw-byte generation should succeed");
+
+        assert_eq!(left, right);
+    }
+
+    #[test]
     fn valid_text_generation_uses_mode_specific_stream_context() {
         let grapheme = generate_valid_text(&TEST_SEED, UnicodeMode::Grapheme, 8)
             .expect("grapheme generation should succeed");
@@ -425,6 +508,14 @@ mod tests {
     }
 
     #[test]
+    fn raw_byte_generation_returns_empty_vec_for_zero_count() {
+        let output = generate_raw_bytes(&TEST_SEED, UnicodeMode::InvalidUtf8, 0)
+            .expect("zero raw-byte cases should succeed");
+
+        assert!(output.is_empty());
+    }
+
+    #[test]
     fn every_valid_text_mode_generates_non_empty_valid_utf8() {
         for mode in UnicodeMode::ALL {
             if mode == UnicodeMode::InvalidUtf8 {
@@ -437,6 +528,42 @@ mod tests {
             assert!(!output.is_empty(), "{mode} output should not be empty");
             assert!(std::str::from_utf8(output.as_bytes()).is_ok());
         }
+    }
+
+    #[test]
+    fn invalid_utf8_raw_byte_generation_returns_invalid_utf8_bytes() {
+        let output = generate_raw_bytes(&TEST_SEED, UnicodeMode::InvalidUtf8, 8)
+            .expect("invalid-utf8 raw-byte generation should succeed");
+
+        assert!(!output.is_empty());
+        assert!(std::str::from_utf8(&output).is_err());
+    }
+
+    #[test]
+    fn valid_modes_raw_byte_generation_returns_valid_utf8_bytes() {
+        for mode in UnicodeMode::ALL {
+            if matches!(mode, UnicodeMode::InvalidUtf8 | UnicodeMode::Mixed) {
+                continue;
+            }
+
+            let output = generate_raw_bytes(&TEST_SEED, mode, 8)
+                .expect("valid raw-byte mode should generate bytes");
+
+            assert!(!output.is_empty(), "{mode} output should not be empty");
+            assert!(
+                std::str::from_utf8(&output).is_ok(),
+                "{mode} raw-byte output should remain valid UTF-8"
+            );
+        }
+    }
+
+    #[test]
+    fn mixed_raw_byte_generation_includes_invalid_utf8_for_larger_sample() {
+        let output = generate_raw_bytes(&TEST_SEED, UnicodeMode::Mixed, 64)
+            .expect("mixed raw-byte generation should succeed");
+
+        assert!(!output.is_empty());
+        assert!(std::str::from_utf8(&output).is_err());
     }
 
     #[test]
