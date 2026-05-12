@@ -26,15 +26,19 @@ The product direction is:
 
 CorpusForge is at an early implementation stage.
 
-This repository now contains a Rust workspace, shared error types, deterministic seed and stream primitives, a CLI skeleton, Milestone 3 `.cff` v0 profile support, and Milestone 6 built-in tokenizer Unicode workflows. The `corpusforge` binary can print top-level and command-specific help, and `.cff` v0 profile build, read, inspect, and verify workflows exist for deterministic fixture profiles.
+This repository now contains a Rust workspace, shared error types, deterministic seed and stream primitives, Milestone 3 `.cff` v0 profile support, Milestone 6 built-in tokenizer Unicode workflows, and a narrow Milestone 7 shrink/replay MVP. The `corpusforge` binary can print top-level and command-specific help, and `.cff` v0 profile build, read, inspect, and verify workflows exist for deterministic fixture profiles.
 
 The `corpusforge-unicode` crate includes Milestone 4 library APIs for deterministic, fixture-based Unicode adversarial generation. The CLI also exposes these fixture-based tokenizer modes through `corpusforge gen --unicode ...` and `corpusforge ci tokenizer`: `grapheme`, `bidi`, `zero-width`, `emoji`, `normalization`, `mixed`, and `invalid-utf8`.
 
 Unicode output boundaries are intentionally separate. Valid-text generation returns UTF-8 text and rejects `invalid-utf8`. Raw-byte generation returns bytes and is the only supported path for `invalid-utf8` cases. The current implementation samples from built-in fixtures with deterministic streams; it is not a broad Unicode or tokenizer compatibility guarantee.
 
-N-gram training and profile-backed generation are implemented as a byte-level bigram MVP. `corpusforge ci tokenizer` can run an external stdin harness against built-in tokenizer Unicode samples and write a stable JSON report. Shrinking, replay metadata, broader CI integrations, packaging, and release automation are not implemented yet.
+N-gram training and profile-backed generation are implemented as a byte-level bigram MVP. `corpusforge ci tokenizer` can run an external stdin harness against built-in tokenizer Unicode samples and write a stable JSON report.
 
-Profile format support is limited to unstable `.cff` v0 behavior with no cross-version compatibility guarantee. Broader deterministic output guarantees, compatibility claims, and generation behavior should be treated as planned until implemented and covered by tests.
+Milestone 7 adds byte-level shrinking and profile-backed replay by byte range. `corpusforge shrink` reads an original failing byte input, invokes a predicate executable directly without a shell, writes candidate bytes to the predicate stdin, and preserves a reproducible failure signature. Predicate exit code `0` means the candidate passed; a nonzero exit means failure. A timeout is preserved only when the original input consistently times out, and flaky predicates are rejected. Defaults are `--timeout-ms 1000` and `--max-runs 10000`.
+
+`corpusforge replay` reads a `.cff` profile with an embedded n-gram model, accepts `--seed` or `--seed-file`, and replays a half-open `--range <start>..<end>` byte range. Without `--out`, replay writes binary bytes directly to stdout. `--json` requires `--out` because stdout otherwise carries replayed bytes. Shrink and replay can write stable metadata JSON without timestamps.
+
+Profile format support is limited to unstable `.cff` v0 behavior with no cross-version compatibility guarantee. The shrinker is byte-level, not Unicode-aware or structure-aware. Replay currently uses direct profile, seed, and range flags rather than consuming a saved metadata file. Broader deterministic output guarantees, compatibility claims, and generation behavior should be treated as planned until implemented and covered by tests.
 
 Do not rely on CorpusForge for production workflows yet.
 

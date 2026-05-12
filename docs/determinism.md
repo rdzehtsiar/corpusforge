@@ -18,9 +18,11 @@ The current implementation covers part of that contract: master seed parsing,
 domain-separated deterministic streams, integer bounded sampling,
 integer-only weighted choice, `.cff` v0 serialization, verification, hashing,
 deterministic fixture profile compilation, and fixture-based Unicode valid-text
-and raw-byte generation in `corpusforge-unicode`. CLI corpus generation,
-profile-driven Unicode generation, replay, shrinking, and CI reports are still
-not implemented.
+and raw-byte generation in `corpusforge-unicode`. It also includes
+byte-level n-gram profile generation, stable tokenizer CI reports for the
+implemented built-in workflow, byte-level shrink with stdin predicates, and
+profile-backed replay by byte range. Profile-driven Unicode generation and
+broader CI reports are still not implemented.
 
 All v0 deterministic behavior is unstable until explicitly versioned with a
 compatibility guarantee and supporting tests.
@@ -117,8 +119,9 @@ Small golden fixtures under `tests/golden` currently cover:
 These fixtures assert the current core and Unicode fixture APIs exactly.
 Additional `.cff` and profile fixtures cover current v0 serialization,
 verification, hashing, and deterministic fixture profile compilation. They do
-not claim CLI corpus generation, broad Unicode compatibility, replay, shrink,
-broad CLI output, report, or cross-version format compatibility.
+not claim broad Unicode compatibility, structure-aware shrink behavior,
+metadata-file-driven replay, broad CLI output, broad report coverage, or
+cross-version format compatibility.
 
 ## Unicode Output Boundaries
 
@@ -143,16 +146,30 @@ coverage.
 
 ## CLI Status
 
-The CLI currently exposes planned command names and parses common flags such as
-`--seed`, `--seed-file`, `--profile`, `--out`, `--bytes`, `--determinism`,
-`--metadata-out`, `--quiet`, and `--json` for placeholder commands.
-
 Profile build, inspect, and verify command behavior exists for implemented
-`.cff` v0 fixture profile workflows. Command execution for generation,
-shrinking, replay, and CI reporting is not implemented. CLI generation flags do
-not yet connect to deterministic stream construction, weighted sampling,
-Unicode fixture generation, profile loading for generation, or output
-generation.
+`.cff` v0 fixture profile workflows. `corpusforge gen` supports implemented
+fixture-based Unicode modes and byte-level profile-backed n-gram generation.
+`corpusforge ci tokenizer` supports the implemented built-in tokenizer stdin
+harness workflow and stable JSON reports.
+
+`corpusforge shrink` implements byte-level minimization of an input file while
+preserving the original predicate failure signature. The predicate executable
+is invoked directly without a shell. Each candidate byte sequence is written to
+predicate stdin. Exit code `0` means the candidate passed, and a nonzero exit
+code is the failure signature to preserve. A timeout is a preservable failure
+signature only when the original input consistently times out. Flaky predicates
+are rejected when repeated runs disagree. Defaults are `--timeout-ms 1000` and
+`--max-runs 10000`.
+
+`corpusforge replay` implements profile-backed replay by byte range. It reads a
+`.cff` profile with an embedded n-gram model, accepts either `--seed` or
+`--seed-file`, and emits the half-open `--range <start>..<end>`. Without
+`--out`, replay writes binary bytes directly to stdout. `--json` requires
+`--out` because stdout is otherwise reserved for replayed bytes.
+
+Shrink and replay metadata JSON is stable and does not include timestamps.
+Replay is direct-flag driven; it does not consume a saved metadata file yet.
+The shrinker operates on bytes and is not Unicode-aware or structure-aware.
 
 ## Offline and Privacy Defaults
 
@@ -167,14 +184,11 @@ explicit approval and must not affect the default offline binary.
 
 Unsupported behavior includes:
 
-- CLI deterministic corpus output
 - stable `.cff` cross-version compatibility guarantees
 - broad Unicode mutation or compatibility guarantees beyond the fixture APIs
-- weighted n-gram corpus generation
-- CLI byte-level invalid UTF-8 generation
-- replay from seed/profile/range metadata
-- shrinking or predicate execution
-- machine-readable CI reports
+- structure-aware or Unicode-aware shrinking
+- replay from saved metadata files
+- broad machine-readable CI reports beyond the tokenizer workflow
 - cross-version deterministic compatibility guarantees
 
 Future compatibility guarantees must identify the exact version, format,

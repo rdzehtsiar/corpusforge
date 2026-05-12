@@ -74,4 +74,4 @@ The JSON report includes the command, seed, Unicode mode, output kind, case coun
 
 ## Current Limitations
 
-Milestone 6 tokenizer workflows use built-in fixture-based Unicode samples. They support stdin harness execution and stable JSON reports for these tokenizer cases, but they do not implement shrinking, replay metadata, broad CI integrations, or broad parser/tokenizer compatibility claims.
+Milestone 6 tokenizer workflows use built-in fixture-based Unicode samples. They support stdin harness execution and stable JSON reports for these tokenizer cases, but they do not provide tokenizer-specific shrinking, tokenizer-specific replay metadata, broad CI integrations, or broad parser/tokenizer compatibility claims. General byte-level shrink and profile-backed replay behavior are documented separately as Milestone 7 workflows.

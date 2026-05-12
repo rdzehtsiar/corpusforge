@@ -23,7 +23,11 @@ Milestone 6 is implemented for built-in Unicode tokenizer workflows. `corpusforg
 
 Valid-text generation rejects `invalid-utf8`; invalid UTF-8 is supported only through raw-byte output. These modes are fixture-based and do not establish broad Unicode, parser, or tokenizer correctness claims.
 
-CLI `shrink` and `replay` behavior remains placeholder-only. CI behavior is currently limited to the built-in tokenizer stdin harness workflow; broader CI integrations, shrinker behavior, replay metadata, packaging, and release automation remain planned.
+Milestone 7 is implemented as a narrow MVP. `corpusforge shrink` performs byte-level reduction of an original failing input using a stdin predicate command. The predicate is invoked directly without a shell, receives each candidate as stdin bytes, treats exit code `0` as pass and nonzero exit as the failure signature, and can preserve a timeout only when the original input consistently times out. Flaky original or candidate predicate results are rejected. The default predicate timeout is 1000ms, and the default run limit is 10000 predicate executions.
+
+`corpusforge replay` regenerates bytes from a `.cff` profile with an embedded n-gram model using `--seed` or `--seed-file`, then emits the half-open byte range supplied as `--range <start>..<end>`. Replay writes binary bytes to stdout unless `--out` is supplied. `--json` requires `--out` so stdout is not used for both binary replay data and JSON.
+
+Shrink and replay can write stable metadata JSON with no timestamps. Replay is currently direct-flag driven rather than metadata-file driven. The shrinker is byte-level only, not Unicode-aware or structure-aware. CI behavior remains limited to the built-in tokenizer stdin harness workflow; broader CI integrations, packaging, and release automation remain planned.
 
 ## Compatibility Note
 
