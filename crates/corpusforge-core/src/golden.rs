@@ -2,11 +2,11 @@
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
-
     use crate::rng::{DeterministicStream, DOMAIN_NGRAM, DOMAIN_UNICODE};
     use crate::seed::MasterSeed;
     use crate::weighted::WeightedTable;
+    use corpusforge_testkit::bytes_to_hex;
+    use std::str::FromStr;
 
     const STREAM_BYTES: usize = 32;
     const WEIGHTED_SAMPLE_COUNT: usize = 16;
@@ -54,14 +54,6 @@ mod tests {
 
     fn seed_1337() -> MasterSeed {
         MasterSeed::from_str("1337").expect("integer seed 1337 should parse")
-    }
-
-    fn bytes_to_hex(bytes: &[u8]) -> String {
-        let mut hex = String::with_capacity(bytes.len() * 2);
-        for byte in bytes {
-            hex.push_str(&format!("{byte:02x}"));
-        }
-        hex
     }
 
     fn fixture(name: &str) -> &'static str {

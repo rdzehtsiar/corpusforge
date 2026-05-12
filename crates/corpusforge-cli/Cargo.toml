@@ -14,6 +14,9 @@ corpusforge-ngram = { path = "../corpusforge-ngram" }
 corpusforge-profile = { path = "../corpusforge-profile" }
 corpusforge-tokenizer = { path = "../corpusforge-tokenizer" }
 
+[dev-dependencies]
+corpusforge-testkit = { path = "../corpusforge-testkit" }
+
 [[bin]]
 name = "corpusforge"
 path = "src/main.rs"

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use corpusforge_cff::{ProfileFile, ProfilePack};
+use corpusforge_testkit::bytes_to_hex;
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -933,16 +934,6 @@ fn build_repository_profile(temp: &TestDir) -> PathBuf {
 
 fn repository_fixtures_path() -> PathBuf {
     workspace_root().join("tests").join("fixtures")
-}
-
-fn bytes_to_hex(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut hex = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        hex.push(HEX[(byte >> 4) as usize] as char);
-        hex.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    hex
 }
 
 fn fixture(name: &str) -> &'static str {

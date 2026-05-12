@@ -182,11 +182,7 @@ where
 }
 
 /// Parses and executes a command using caller-provided streams.
-pub fn run_to_writers<I, S>(
-    args: I,
-    stdout: &mut impl std::io::Write,
-    stderr: &mut impl std::io::Write,
-) -> i32
+pub fn run_to_writers<I, S>(args: I, stdout: &mut impl Write, stderr: &mut impl Write) -> i32
 where
     I: IntoIterator<Item = S>,
     S: Into<OsString>,
@@ -207,11 +203,7 @@ where
 }
 
 /// Returns process exit code for an outcome and writes it to the provided streams.
-pub fn write_outcome(
-    outcome: CliOutcome,
-    stdout: &mut impl std::io::Write,
-    stderr: &mut impl std::io::Write,
-) -> i32 {
+pub fn write_outcome(outcome: CliOutcome, stdout: &mut impl Write, stderr: &mut impl Write) -> i32 {
     match outcome {
         CliOutcome::Success(text) => {
             if !text.is_empty() {
@@ -878,10 +870,7 @@ fn take_raw_string_value(
     Ok(value.into_owned())
 }
 
-fn execute_command(
-    command: ParsedCommand,
-    stdout: &mut impl std::io::Write,
-) -> Result<Option<String>> {
+fn execute_command(command: ParsedCommand, stdout: &mut impl Write) -> Result<Option<String>> {
     match command {
         ParsedCommand::TopHelp => Ok(Some(top_level_help())),
         ParsedCommand::Version => Ok(Some(version_text())),
@@ -930,7 +919,7 @@ fn execute_ci_tokenizer(options: CiTokenizerOptions) -> Result<String> {
     ))
 }
 
-fn execute_gen(options: GenOptions, stdout: &mut impl std::io::Write) -> Result<Option<String>> {
+fn execute_gen(options: GenOptions, stdout: &mut impl Write) -> Result<Option<String>> {
     match options {
         GenOptions::Profile(options) => execute_profile_gen(options, stdout),
         GenOptions::Unicode(options) => execute_unicode_gen(options, stdout),
@@ -939,7 +928,7 @@ fn execute_gen(options: GenOptions, stdout: &mut impl std::io::Write) -> Result<
 
 fn execute_profile_gen(
     options: ProfileGenOptions,
-    stdout: &mut impl std::io::Write,
+    stdout: &mut impl Write,
 ) -> Result<Option<String>> {
     let seed = read_seed(&options.seed_source)?;
     let profile_bytes = fs::read(&options.profile)?;
@@ -976,7 +965,7 @@ fn execute_profile_gen(
 
 fn execute_unicode_gen(
     options: UnicodeGenOptions,
-    stdout: &mut impl std::io::Write,
+    stdout: &mut impl Write,
 ) -> Result<Option<String>> {
     let seed = read_seed(&options.seed_source)?;
     let spec = TokenizerCaseSpec::new(options.mode, options.output_kind, options.case_count)?;
@@ -1548,6 +1537,7 @@ fn build_profile() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{run, CliOutcome};
+    use corpusforge_testkit::bytes_to_hex;
     use std::io::{self, Read};
 
     #[test]
@@ -1763,17 +1753,7 @@ mod tests {
             ),
         ];
 
-        for (args, expected) in cases {
-            let CliOutcome::Failure(error) = run(args) else {
-                panic!("{args:?} should fail");
-            };
-
-            assert_eq!(error.category(), "invalid_argument");
-            assert!(
-                error.to_string().contains(expected),
-                "{error} should contain {expected}"
-            );
-        }
+        assert_invalid_argument_cases(&cases);
     }
 
     #[test]
@@ -1920,17 +1900,7 @@ mod tests {
             ),
         ];
 
-        for (args, expected) in cases {
-            let CliOutcome::Failure(error) = run(args) else {
-                panic!("{args:?} should fail");
-            };
-
-            assert_eq!(error.category(), "invalid_argument");
-            assert!(
-                error.to_string().contains(expected),
-                "{error} should contain {expected}"
-            );
-        }
+        assert_invalid_argument_cases(&cases);
     }
 
     #[test]
@@ -1966,17 +1936,7 @@ mod tests {
             ),
         ];
 
-        for (args, expected) in cases {
-            let CliOutcome::Failure(error) = run(args) else {
-                panic!("{args:?} should fail");
-            };
-
-            assert_eq!(error.category(), "invalid_argument");
-            assert!(
-                error.to_string().contains(expected),
-                "{error} should contain {expected}"
-            );
-        }
+        assert_invalid_argument_cases(&cases);
     }
 
     #[test]
@@ -2034,17 +1994,7 @@ mod tests {
             ),
         ];
 
-        for (args, expected) in cases {
-            let CliOutcome::Failure(error) = run(args) else {
-                panic!("{args:?} should fail");
-            };
-
-            assert_eq!(error.category(), "invalid_argument");
-            assert!(
-                error.to_string().contains(expected),
-                "{error} should contain {expected}"
-            );
-        }
+        assert_invalid_argument_cases(&cases);
     }
 
     #[test]
@@ -2190,17 +2140,7 @@ mod tests {
             ),
         ];
 
-        for (args, expected) in cases {
-            let CliOutcome::Failure(error) = run(args) else {
-                panic!("{args:?} should fail");
-            };
-
-            assert_eq!(error.category(), "invalid_argument");
-            assert!(
-                error.to_string().contains(expected),
-                "{error} should contain {expected}"
-            );
-        }
+        assert_invalid_argument_cases(&cases);
     }
 
     #[test]
@@ -2247,12 +2187,18 @@ mod tests {
         value.replace('\\', "\\\\").replace('"', "\\\"")
     }
 
-    fn bytes_to_hex(bytes: &[u8]) -> String {
-        let mut hex = String::with_capacity(bytes.len() * 2);
-        for byte in bytes {
-            hex.push_str(&format!("{byte:02x}"));
+    fn assert_invalid_argument_cases(cases: &[(&[&str], &str)]) {
+        for (args, expected) in cases {
+            let CliOutcome::Failure(error) = run(*args) else {
+                panic!("{args:?} should fail");
+            };
+
+            assert_eq!(error.category(), "invalid_argument");
+            assert!(
+                error.to_string().contains(expected),
+                "{error} should contain {expected}"
+            );
         }
-        hex
     }
 
     fn fixture(name: &str) -> &'static str {

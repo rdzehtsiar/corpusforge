@@ -12,5 +12,8 @@ blake3 = "1.5"
 rand_chacha = "0.3"
 rand_core = "0.6"
 
+[dev-dependencies]
+corpusforge-testkit = { path = "../corpusforge-testkit" }
+
 [lints]
 workspace = true

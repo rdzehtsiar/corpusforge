@@ -12,5 +12,8 @@ description = "Fixture-based Unicode adversarial generation for CorpusForge"
 [dependencies]
 corpusforge-core = { path = "../corpusforge-core" }
 
+[dev-dependencies]
+corpusforge-testkit = { path = "../corpusforge-testkit" }
+
 [lints]
 workspace = true

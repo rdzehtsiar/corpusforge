@@ -66,6 +66,7 @@ dependencies = [
  "corpusforge-core",
  "corpusforge-ngram",
  "corpusforge-profile",
+ "corpusforge-testkit",
  "corpusforge-tokenizer",
 ]
 
@@ -74,6 +75,7 @@ name = "corpusforge-core"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "corpusforge-testkit",
  "rand_chacha",
  "rand_core",
 ]
@@ -115,6 +117,7 @@ name = "corpusforge-unicode"
 version = "0.1.0"
 dependencies = [
  "corpusforge-core",
+ "corpusforge-testkit",
 ]
 
 [[package]]

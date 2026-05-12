@@ -354,12 +354,10 @@ mod tests {
         GRAPHEME_FIXTURES, NORMALIZATION_FIXTURES, VALID_TEXT_FAMILIES, ZERO_WIDTH_FIXTURES,
     };
     use corpusforge_core::seed::MasterSeed;
+    use corpusforge_testkit::{bytes_to_hex, TEST_SEED_BYTES};
     use std::str::FromStr;
 
-    const TEST_SEED: MasterSeed = MasterSeed::from_bytes([
-        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-        25, 26, 27, 28, 29, 30, 31,
-    ]);
+    const TEST_SEED: MasterSeed = MasterSeed::from_bytes(TEST_SEED_BYTES);
 
     #[test]
     fn exposes_crate_name() {
@@ -676,14 +674,6 @@ mod tests {
 
     fn seed_1337() -> MasterSeed {
         MasterSeed::from_str("1337").expect("integer seed 1337 should parse")
-    }
-
-    fn bytes_to_hex(bytes: &[u8]) -> String {
-        let mut hex = String::with_capacity(bytes.len() * 2);
-        for byte in bytes {
-            hex.push_str(&format!("{byte:02x}"));
-        }
-        hex
     }
 
     fn fixture(name: &str) -> &'static str {
