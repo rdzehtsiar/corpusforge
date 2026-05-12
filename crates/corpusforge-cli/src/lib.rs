@@ -3,11 +3,15 @@
 //! Command-line parsing and execution for the CorpusForge binary.
 
 use corpusforge_cff::{InspectSummary, ProfilePack};
+use corpusforge_core::seed::MasterSeed;
 use corpusforge_core::{CorpusForgeError, Result};
+use corpusforge_ngram::{ByteBigramModel, ENGINE_NAME, ENGINE_VERSION};
 use corpusforge_profile::compile_path;
 use std::ffi::OsString;
-use std::fs;
+use std::fs::{self, File};
+use std::io::Write;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 const COMMANDS: [CommandSpec; 6] = [
     CommandSpec {
@@ -41,6 +45,8 @@ const COMMANDS: [CommandSpec; 6] = [
 pub enum CliOutcome {
     /// Text to print to standard output.
     Success(String),
+    /// Binary bytes to write to standard output without a trailing newline.
+    SuccessBytes(Vec<u8>),
     /// A clean project error to print to standard error.
     Failure(CorpusForgeError),
 }
@@ -60,6 +66,7 @@ enum ParsedCommand {
     Version,
     CommandHelp(&'static CommandSpec),
     ExecutePlaceholder(&'static CommandSpec),
+    ExecuteGen(GenOptions),
     ExecuteProfile(ProfileCommand),
     ExecuteVerifyAlias(ProfileFileOptions),
 }
@@ -90,6 +97,39 @@ struct ProfileFileOptions {
     json: bool,
 }
 
+#[derive(Debug, Eq, PartialEq)]
+struct GenOptions {
+    profile: PathBuf,
+    seed_source: SeedSource,
+    byte_count: usize,
+    out: Option<PathBuf>,
+    metadata_out: Option<PathBuf>,
+    determinism: DeterminismMode,
+    quiet: bool,
+    json: bool,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum SeedSource {
+    Inline(String),
+    File(PathBuf),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DeterminismMode {
+    Strict,
+    Relaxed,
+}
+
+impl DeterminismMode {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Strict => "strict",
+            Self::Relaxed => "relaxed",
+        }
+    }
+}
+
 /// Parses arguments and returns the CLI outcome without writing to the terminal.
 pub fn run<I, S>(args: I) -> CliOutcome
 where
@@ -97,17 +137,40 @@ where
     S: Into<OsString>,
 {
     match parse(args) {
-        Ok(command) => match command {
-            ParsedCommand::TopHelp => CliOutcome::Success(top_level_help()),
-            ParsedCommand::Version => CliOutcome::Success(version_text()),
-            ParsedCommand::CommandHelp(command) => CliOutcome::Success(command_help(command)),
-            ParsedCommand::ExecutePlaceholder(command) => CliOutcome::Failure(
-                CorpusForgeError::not_implemented(format!("{} command execution", command.name)),
-            ),
-            ParsedCommand::ExecuteProfile(command) => execute_profile_command(command).into(),
-            ParsedCommand::ExecuteVerifyAlias(options) => execute_profile_verify(options).into(),
-        },
+        Ok(command) => {
+            let mut stdout = Vec::new();
+            match execute_command(command, &mut stdout) {
+                Ok(Some(text)) => CliOutcome::Success(text),
+                Ok(None) => CliOutcome::SuccessBytes(stdout),
+                Err(error) => CliOutcome::Failure(error),
+            }
+        }
         Err(error) => CliOutcome::Failure(error),
+    }
+}
+
+/// Parses and executes a command using caller-provided streams.
+pub fn run_to_writers<I, S>(
+    args: I,
+    stdout: &mut impl std::io::Write,
+    stderr: &mut impl std::io::Write,
+) -> i32
+where
+    I: IntoIterator<Item = S>,
+    S: Into<OsString>,
+{
+    match parse(args).and_then(|command| execute_command(command, stdout)) {
+        Ok(Some(text)) => {
+            if !text.is_empty() {
+                let _ = writeln!(stdout, "{text}");
+            }
+            0
+        }
+        Ok(None) => 0,
+        Err(error) => {
+            let _ = writeln!(stderr, "error: {error}");
+            1
+        }
     }
 }
 
@@ -119,7 +182,13 @@ pub fn write_outcome(
 ) -> i32 {
     match outcome {
         CliOutcome::Success(text) => {
-            let _ = writeln!(stdout, "{text}");
+            if !text.is_empty() {
+                let _ = writeln!(stdout, "{text}");
+            }
+            0
+        }
+        CliOutcome::SuccessBytes(bytes) => {
+            let _ = stdout.write_all(&bytes);
             0
         }
         CliOutcome::Failure(error) => {
@@ -157,6 +226,8 @@ where
                 Ok(ParsedCommand::CommandHelp(command))
             } else if command.name == "profile" {
                 parse_profile_command(&remaining).map(ParsedCommand::ExecuteProfile)
+            } else if command.name == "gen" {
+                parse_gen_options(&remaining).map(ParsedCommand::ExecuteGen)
             } else if command.name == "verify" && contains_profile_option(&remaining) {
                 parse_profile_file_options("verify", &remaining)
                     .map(ParsedCommand::ExecuteVerifyAlias)
@@ -307,6 +378,175 @@ fn parse_profile_file_options(command: &str, args: &[OsString]) -> Result<Profil
     Ok(ProfileFileOptions { profile, json })
 }
 
+fn parse_gen_options(args: &[OsString]) -> Result<GenOptions> {
+    let command = find_command("gen").expect("gen command should exist");
+    let mut profile = None;
+    let mut seed_source = None;
+    let mut byte_count = None;
+    let mut out = None;
+    let mut metadata_out = None;
+    let mut determinism = DeterminismMode::Strict;
+    let mut determinism_set = false;
+    let mut quiet = false;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        let flag = args[index].to_string_lossy();
+
+        match flag.as_ref() {
+            "--profile" => {
+                if profile.is_some() {
+                    return Err(CorpusForgeError::invalid_argument(
+                        "duplicate option `--profile`",
+                    ));
+                }
+                profile = Some(take_path_value("gen", args, index, "--profile")?);
+                index += 2;
+            }
+            "--seed" => {
+                if let Some(existing) = seed_source_name(&seed_source) {
+                    return Err(seed_conflict("--seed", existing));
+                }
+                let seed = take_value(command, args, index, "--seed")?;
+                validate_non_empty(&seed, "--seed")?;
+                seed_source = Some(SeedSource::Inline(seed));
+                index += 2;
+            }
+            "--seed-file" => {
+                if let Some(existing) = seed_source_name(&seed_source) {
+                    return Err(seed_conflict("--seed-file", existing));
+                }
+                seed_source = Some(SeedSource::File(take_path_value(
+                    "gen",
+                    args,
+                    index,
+                    "--seed-file",
+                )?));
+                index += 2;
+            }
+            "--bytes" => {
+                if byte_count.is_some() {
+                    return Err(CorpusForgeError::invalid_argument(
+                        "duplicate option `--bytes`",
+                    ));
+                }
+                let value = take_value(command, args, index, "--bytes")?;
+                let bytes = parse_byte_size(&value)?;
+                byte_count = Some(usize::try_from(bytes).map_err(|_| {
+                    CorpusForgeError::invalid_argument(format!(
+                        "byte size `{value}` exceeds this platform's maximum supported output size"
+                    ))
+                })?);
+                index += 2;
+            }
+            "--out" => {
+                if out.is_some() {
+                    return Err(CorpusForgeError::invalid_argument(
+                        "duplicate option `--out`",
+                    ));
+                }
+                out = Some(take_path_value("gen", args, index, "--out")?);
+                index += 2;
+            }
+            "--metadata-out" => {
+                if metadata_out.is_some() {
+                    return Err(CorpusForgeError::invalid_argument(
+                        "duplicate option `--metadata-out`",
+                    ));
+                }
+                metadata_out = Some(take_path_value("gen", args, index, "--metadata-out")?);
+                index += 2;
+            }
+            "--determinism" => {
+                if determinism_set {
+                    return Err(CorpusForgeError::invalid_argument(
+                        "duplicate option `--determinism`",
+                    ));
+                }
+                let value = take_value(command, args, index, "--determinism")?;
+                determinism = parse_determinism_mode(&value)?;
+                determinism_set = true;
+                index += 2;
+            }
+            "--quiet" => {
+                if quiet {
+                    return Err(CorpusForgeError::invalid_argument(
+                        "duplicate option `--quiet`",
+                    ));
+                }
+                quiet = true;
+                index += 1;
+            }
+            "--json" => {
+                if json {
+                    return Err(CorpusForgeError::invalid_argument(
+                        "duplicate option `--json`",
+                    ));
+                }
+                json = true;
+                index += 1;
+            }
+            "-h" | "--help" => {
+                return Err(CorpusForgeError::invalid_argument(
+                    "help must be requested without other arguments; run `corpusforge gen --help`",
+                ));
+            }
+            other if other.starts_with('-') => {
+                return Err(CorpusForgeError::invalid_argument(format!(
+                    "unknown option `{other}` for `gen`; run `corpusforge gen --help`"
+                )));
+            }
+            other => {
+                return Err(CorpusForgeError::invalid_argument(format!(
+                    "unexpected argument `{other}` for `gen`; run `corpusforge gen --help`"
+                )));
+            }
+        }
+    }
+
+    if json && out.is_none() {
+        return Err(CorpusForgeError::invalid_argument(
+            "`--json` requires `--out` for `gen` because standard output carries generated binary bytes",
+        ));
+    }
+
+    let profile = profile.ok_or_else(|| {
+        CorpusForgeError::invalid_argument("missing required option `--profile` for `gen`")
+    })?;
+    let seed_source = seed_source.ok_or_else(|| {
+        CorpusForgeError::invalid_argument(
+            "missing required seed source for `gen`; use exactly one of `--seed` or `--seed-file`",
+        )
+    })?;
+    let byte_count = byte_count.ok_or_else(|| {
+        CorpusForgeError::invalid_argument("missing required option `--bytes` for `gen`")
+    })?;
+
+    Ok(GenOptions {
+        profile,
+        seed_source,
+        byte_count,
+        out,
+        metadata_out,
+        determinism,
+        quiet,
+        json,
+    })
+}
+
+fn seed_source_name(seed_source: &Option<SeedSource>) -> Option<&'static str> {
+    match seed_source {
+        Some(SeedSource::Inline(_)) => Some("--seed"),
+        Some(SeedSource::File(_)) => Some("--seed-file"),
+        None => None,
+    }
+}
+
+fn seed_conflict(flag: &'static str, existing: &'static str) -> CorpusForgeError {
+    CorpusForgeError::invalid_argument(format!("seed input `{flag}` conflicts with `{existing}`"))
+}
+
 fn take_path_value(
     command: &str,
     args: &[OsString],
@@ -333,6 +573,112 @@ fn take_path_value(
     }
 
     Ok(PathBuf::from(value.as_os_str()))
+}
+
+fn execute_command(
+    command: ParsedCommand,
+    stdout: &mut impl std::io::Write,
+) -> Result<Option<String>> {
+    match command {
+        ParsedCommand::TopHelp => Ok(Some(top_level_help())),
+        ParsedCommand::Version => Ok(Some(version_text())),
+        ParsedCommand::CommandHelp(command) => Ok(Some(command_help(command))),
+        ParsedCommand::ExecutePlaceholder(command) => Err(CorpusForgeError::not_implemented(
+            format!("{} command execution", command.name),
+        )),
+        ParsedCommand::ExecuteGen(options) => execute_gen(options, stdout),
+        ParsedCommand::ExecuteProfile(command) => execute_profile_command(command).map(Some),
+        ParsedCommand::ExecuteVerifyAlias(options) => execute_profile_verify(options).map(Some),
+    }
+}
+
+fn execute_gen(options: GenOptions, stdout: &mut impl std::io::Write) -> Result<Option<String>> {
+    let seed = read_seed(&options.seed_source)?;
+    let profile_bytes = fs::read(&options.profile)?;
+    let pack = ProfilePack::from_bytes(&profile_bytes)?;
+    let profile_hash = pack.profile_hash();
+    let model_bytes = pack.ngram_model_bytes().ok_or_else(|| {
+        CorpusForgeError::invalid_profile(
+            "profile lacks required NGRAMV0\\0 n-gram model section; rebuild it with `corpusforge profile build <input> --out <path>`",
+        )
+    })?;
+    let model = ByteBigramModel::from_bytes(model_bytes)?;
+
+    if let Some(out) = &options.out {
+        let mut file = File::create(out)?;
+        model.generate_bytes(&seed, options.byte_count, &mut file)?;
+        file.flush()?;
+    } else {
+        model.generate_bytes(&seed, options.byte_count, stdout)?;
+    }
+
+    if let Some(metadata_out) = &options.metadata_out {
+        fs::write(
+            metadata_out,
+            format_gen_metadata(&options, &seed, &profile_hash),
+        )?;
+    }
+
+    if options.out.is_none() || options.quiet {
+        return Ok(None);
+    }
+
+    Ok(Some(format_gen_summary(&options, &seed, &profile_hash)))
+}
+
+fn read_seed(seed_source: &SeedSource) -> Result<MasterSeed> {
+    match seed_source {
+        SeedSource::Inline(text) => MasterSeed::from_str(text),
+        SeedSource::File(path) => MasterSeed::from_seed_file(path),
+    }
+}
+
+fn format_gen_summary(options: &GenOptions, seed: &MasterSeed, profile_hash: &str) -> String {
+    let out = options
+        .out
+        .as_ref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "stdout".to_owned());
+
+    if options.json {
+        return format!(
+            "{{\"command\":\"gen\",\"seed\":\"{}\",\"profile_hash\":\"{}\",\"engine_name\":\"{}\",\"engine_version\":{},\"byte_count\":{},\"out\":\"{}\"}}",
+            seed,
+            json_escape(profile_hash),
+            json_escape(ENGINE_NAME),
+            ENGINE_VERSION,
+            options.byte_count,
+            json_escape(&out)
+        );
+    }
+
+    format!(
+        "generated corpus\nprofile_hash: {profile_hash}\nseed: {seed}\nengine: {engine_name}/{engine_version}\nbyte_count: {byte_count}\nout: {out}",
+        engine_name = ENGINE_NAME,
+        engine_version = ENGINE_VERSION,
+        byte_count = options.byte_count
+    )
+}
+
+fn format_gen_metadata(options: &GenOptions, seed: &MasterSeed, profile_hash: &str) -> String {
+    let output_mode = if options.out.is_some() {
+        "file"
+    } else {
+        "stdout"
+    };
+    format!(
+        "{{\"tool_version\":\"{}\",\"command\":\"gen\",\"seed\":\"{}\",\"profile_hash\":\"{}\",\"engine_name\":\"{}\",\"engine_version\":{},\"byte_count\":{},\"determinism\":\"{}\",\"output_mode\":\"{}\",\"json_summary\":{},\"quiet\":{}}}\n",
+        json_escape(env!("CARGO_PKG_VERSION")),
+        seed,
+        json_escape(profile_hash),
+        json_escape(ENGINE_NAME),
+        ENGINE_VERSION,
+        options.byte_count,
+        options.determinism.as_str(),
+        output_mode,
+        options.json,
+        options.quiet
+    )
 }
 
 fn execute_profile_command(command: ProfileCommand) -> Result<String> {
@@ -623,8 +969,13 @@ fn validate_non_empty(value: &str, flag: &str) -> Result<()> {
 }
 
 fn parse_determinism(value: &str) -> Result<()> {
+    parse_determinism_mode(value).map(|_| ())
+}
+
+fn parse_determinism_mode(value: &str) -> Result<DeterminismMode> {
     match value {
-        "strict" | "relaxed" => Ok(()),
+        "strict" => Ok(DeterminismMode::Strict),
+        "relaxed" => Ok(DeterminismMode::Relaxed),
         _ => Err(CorpusForgeError::invalid_argument(format!(
             "invalid determinism mode `{value}`; expected `strict` or `relaxed`"
         ))),
@@ -701,8 +1052,20 @@ fn command_help(command: &CommandSpec) -> String {
         return profile_help(command);
     }
 
+    if command.name == "gen" {
+        return gen_help(command);
+    }
+
     format!(
         "corpusforge {name}\n\n{summary}\n\nUSAGE:\n    corpusforge {name} [OPTIONS]\n\nOPTIONS:\n    --seed <seed>                 Use an inline deterministic seed\n    --seed-file <path>            Read the deterministic seed from a file\n    --profile <path>              Read a CorpusForge profile path\n    --out <path>                  Write generated output to a path\n    --bytes <N>                   Set output size in bytes; supports KB, MB, GB\n    --determinism <mode>          Determinism mode: strict or relaxed\n    --metadata-out <path>         Write machine-readable metadata to a path\n    --quiet                       Reduce human-readable output\n    --json                        Emit machine-readable JSON where supported\n    -h, --help                    Print help\n\nEXAMPLES:\n    corpusforge {name} --seed 42 --profile profiles/smoke.cff --bytes 64KB\n    corpusforge {name} --seed-file seed.txt --determinism strict --metadata-out report.json --json\n\nSTATUS:\n    Planned for a later milestone; execution currently returns NotImplemented.",
+        name = command.name,
+        summary = command.summary
+    )
+}
+
+fn gen_help(command: &CommandSpec) -> String {
+    format!(
+        "corpusforge {name}\n\n{summary}\n\nUSAGE:\n    corpusforge gen --profile <path> (--seed <seed> | --seed-file <path>) --bytes <N> [OPTIONS]\n\nOPTIONS:\n    --profile <path>              Read a CorpusForge .cff profile with an embedded n-gram model\n    --seed <seed>                 Use an inline deterministic seed\n    --seed-file <path>            Read the deterministic seed from a 32-byte file\n    --bytes <N>                   Set output size in bytes; supports KB, MB, GB\n    --out <path>                  Stream generated bytes to a file instead of stdout\n    --determinism <mode>          Determinism mode: strict or relaxed\n    --metadata-out <path>         Write stable generation metadata JSON to a path\n    --quiet                       Suppress human-readable output when --out is used\n    --json                        Emit JSON summary when --out is used\n    -h, --help                    Print help\n\nSTDOUT:\n    Without --out, generated binary bytes are written directly to stdout. Use --out before --json.",
         name = command.name,
         summary = command.summary
     )
@@ -793,8 +1156,13 @@ mod tests {
                 assert!(help.contains("--metadata-out <path>"));
                 assert!(help.contains("--quiet"));
                 assert!(help.contains("--json"));
-                assert!(help.contains("EXAMPLES"));
-                assert!(help.contains("Planned for a later milestone"));
+                if command == "gen" {
+                    assert!(help.contains("generated binary bytes"));
+                    assert!(!help.contains("Planned for a later milestone"));
+                } else {
+                    assert!(help.contains("EXAMPLES"));
+                    assert!(help.contains("Planned for a later milestone"));
+                }
             }
         }
     }
@@ -815,24 +1183,25 @@ mod tests {
 
         assert!(help.contains("corpusforge gen"));
         assert!(help.contains("--bytes <N>"));
-        assert!(help.contains("Planned for a later milestone"));
+        assert!(help.contains("generated binary bytes"));
+        assert!(!help.contains("Planned for a later milestone"));
     }
 
     #[test]
     fn placeholder_command_returns_not_implemented() {
-        let CliOutcome::Failure(error) = run(["corpusforge", "gen"]) else {
+        let CliOutcome::Failure(error) = run(["corpusforge", "shrink"]) else {
             panic!("placeholder execution should fail");
         };
 
         assert_eq!(error.category(), "not_implemented");
-        assert!(error.to_string().contains("gen command execution"));
+        assert!(error.to_string().contains("shrink command execution"));
     }
 
     #[test]
     fn common_options_parse_before_placeholder_execution() {
         let CliOutcome::Failure(error) = run([
             "corpusforge",
-            "gen",
+            "replay",
             "--seed",
             "42",
             "--profile",
@@ -852,7 +1221,7 @@ mod tests {
         };
 
         assert_eq!(error.category(), "not_implemented");
-        assert!(error.to_string().contains("gen command execution"));
+        assert!(error.to_string().contains("replay command execution"));
     }
 
     #[test]
@@ -875,15 +1244,69 @@ mod tests {
     }
 
     #[test]
-    fn plain_byte_size_parses_before_placeholder_execution() {
-        let CliOutcome::Failure(error) =
-            run(["corpusforge", "gen", "--seed", "42", "--bytes", "1024"])
-        else {
-            panic!("placeholder execution should fail");
+    fn gen_requires_profile_seed_and_bytes() {
+        let cases = [
+            (
+                &["corpusforge", "gen", "--seed", "42", "--bytes", "1024"][..],
+                "missing required option `--profile`",
+            ),
+            (
+                &[
+                    "corpusforge",
+                    "gen",
+                    "--profile",
+                    "profiles/smoke.cff",
+                    "--bytes",
+                    "1024",
+                ][..],
+                "missing required seed source",
+            ),
+            (
+                &[
+                    "corpusforge",
+                    "gen",
+                    "--profile",
+                    "profiles/smoke.cff",
+                    "--seed",
+                    "42",
+                ][..],
+                "missing required option `--bytes`",
+            ),
+        ];
+
+        for (args, expected) in cases {
+            let CliOutcome::Failure(error) = run(args) else {
+                panic!("{args:?} should fail");
+            };
+
+            assert_eq!(error.category(), "invalid_argument");
+            assert!(
+                error.to_string().contains(expected),
+                "{error} should contain {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn gen_rejects_json_without_out() {
+        let CliOutcome::Failure(error) = run([
+            "corpusforge",
+            "gen",
+            "--profile",
+            "profiles/smoke.cff",
+            "--seed",
+            "42",
+            "--bytes",
+            "1024",
+            "--json",
+        ]) else {
+            panic!("json without out should fail");
         };
 
-        assert_eq!(error.category(), "not_implemented");
-        assert!(error.to_string().contains("gen command execution"));
+        assert_eq!(error.category(), "invalid_argument");
+        assert!(error
+            .to_string()
+            .contains("standard output carries generated binary bytes"));
     }
 
     #[test]

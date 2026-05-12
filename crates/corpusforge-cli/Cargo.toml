@@ -10,6 +10,7 @@ description = "CorpusForge command line interface placeholder"
 [dependencies]
 corpusforge-cff = { path = "../corpusforge-cff" }
 corpusforge-core = { path = "../corpusforge-core" }
+corpusforge-ngram = { path = "../corpusforge-ngram" }
 corpusforge-profile = { path = "../corpusforge-profile" }
 
 [[bin]]

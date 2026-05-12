@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use corpusforge_cff::{ProfileFile, ProfilePack};
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -50,7 +51,12 @@ fn binary_command_help_exits_successfully() {
             assert!(stdout.contains("--metadata-out <path>"));
             assert!(stdout.contains("--quiet"));
             assert!(stdout.contains("--json"));
-            assert!(stdout.contains("EXAMPLES"));
+            if command == "gen" {
+                assert!(stdout.contains("generated binary bytes"));
+                assert!(!stdout.contains("Planned for a later milestone"));
+            } else {
+                assert!(stdout.contains("EXAMPLES"));
+            }
         }
     }
 }
@@ -66,27 +72,28 @@ fn binary_command_help_with_common_flags_exits_successfully() {
     let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
     assert!(stdout.contains("corpusforge gen"));
     assert!(stdout.contains("--bytes <N>"));
-    assert!(stdout.contains("Planned for a later milestone"));
+    assert!(stdout.contains("generated binary bytes"));
+    assert!(!stdout.contains("Planned for a later milestone"));
 }
 
 #[test]
 fn binary_placeholder_execution_exits_nonzero() {
     let output = corpusforge()
-        .arg("gen")
+        .arg("shrink")
         .output()
         .expect("binary should run");
 
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
     assert!(stderr.contains("error: not implemented"));
-    assert!(stderr.contains("gen command execution"));
+    assert!(stderr.contains("shrink command execution"));
 }
 
 #[test]
 fn binary_common_flags_parse_before_placeholder_execution() {
     let output = corpusforge()
         .args([
-            "gen",
+            "replay",
             "--seed",
             "42",
             "--profile",
@@ -108,7 +115,7 @@ fn binary_common_flags_parse_before_placeholder_execution() {
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
     assert!(stderr.contains("error: not implemented"));
-    assert!(stderr.contains("gen command execution"));
+    assert!(stderr.contains("replay command execution"));
 }
 
 #[test]
@@ -226,6 +233,123 @@ fn binary_profile_inspect_output_matches_fixture_summary() {
     assert!(inspect.status.success());
     let stdout = String::from_utf8(inspect.stdout).expect("stdout should be UTF-8");
     assert_eq!(stdout, expected_fixture_summary("inspected profile"));
+}
+
+#[test]
+fn binary_gen_stdout_emits_exact_deterministic_bytes() {
+    let temp = TestDir::new("gen-stdout");
+    let profile = build_repository_profile(&temp);
+
+    let first = corpusforge()
+        .args(["gen", "--profile"])
+        .arg(&profile)
+        .args(["--seed", "1337", "--bytes", "64"])
+        .output()
+        .expect("binary should run");
+    assert!(first.status.success());
+    assert_eq!(first.stdout.len(), 64);
+    assert!(first.stderr.is_empty());
+
+    let second = corpusforge()
+        .args(["gen", "--profile"])
+        .arg(&profile)
+        .args(["--seed", "1337", "--bytes", "64"])
+        .output()
+        .expect("binary should run");
+    assert!(second.status.success());
+    assert_eq!(second.stdout, first.stdout);
+    assert!(second.stderr.is_empty());
+}
+
+#[test]
+fn binary_gen_out_writes_exact_bytes_and_summary() {
+    let temp = TestDir::new("gen-out");
+    let profile = build_repository_profile(&temp);
+    let out = temp.path().join("generated.bin");
+
+    let output = corpusforge()
+        .args(["gen", "--profile"])
+        .arg(&profile)
+        .args(["--seed", "1337", "--bytes", "32", "--out"])
+        .arg(&out)
+        .output()
+        .expect("binary should run");
+
+    assert!(output.status.success());
+    assert_eq!(
+        fs::read(&out).expect("generated file should exist").len(),
+        32
+    );
+    assert!(output.stderr.is_empty());
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    assert!(stdout.contains("generated corpus"));
+    assert!(stdout.contains("byte_count: 32"));
+    assert!(stdout.contains("profile_hash: cff:"));
+    assert!(stdout.contains("out:"));
+}
+
+#[test]
+fn binary_gen_metadata_out_writes_stable_json_fields() {
+    let temp = TestDir::new("gen-metadata");
+    let profile = build_repository_profile(&temp);
+    let out = temp.path().join("generated.bin");
+    let metadata = temp.path().join("metadata.json");
+
+    let output = corpusforge()
+        .args(["gen", "--profile"])
+        .arg(&profile)
+        .args(["--seed", "1337", "--bytes", "16", "--out"])
+        .arg(&out)
+        .args(["--metadata-out"])
+        .arg(&metadata)
+        .output()
+        .expect("binary should run");
+
+    assert!(output.status.success());
+    assert_eq!(
+        fs::read(&out).expect("generated file should exist").len(),
+        16
+    );
+    let metadata = fs::read_to_string(&metadata).expect("metadata should be UTF-8");
+    assert!(metadata.contains(&format!(
+        "\"tool_version\":\"{}\"",
+        env!("CARGO_PKG_VERSION")
+    )));
+    assert!(metadata.contains("\"command\":\"gen\""));
+    assert!(metadata.contains("\"seed\":\""));
+    assert!(metadata.contains(
+        "\"profile_hash\":\"cff:d2fb375e2bda819d4746e0077823653fee6704c314d2c99e40953374add636c6\""
+    ));
+    assert!(metadata.contains("\"engine_name\":\"corpusforge.byte_bigram\""));
+    assert!(metadata.contains("\"engine_version\":0"));
+    assert!(metadata.contains("\"byte_count\":16"));
+    assert!(metadata.contains("\"determinism\":\"strict\""));
+    assert!(metadata.contains("\"output_mode\":\"file\""));
+    assert!(metadata.ends_with('\n'));
+}
+
+#[test]
+fn binary_gen_rejects_profile_without_ngram_model() {
+    let temp = TestDir::new("gen-legacy-profile");
+    let profile = temp.path().join("legacy.cff");
+    let pack = ProfilePack::new(vec![
+        ProfileFile::new("legacy.txt", b"legacy".to_vec()).expect("file should be valid")
+    ])
+    .expect("pack should be valid");
+    fs::write(&profile, pack.to_bytes()).expect("legacy profile should be written");
+
+    let output = corpusforge()
+        .args(["gen", "--profile"])
+        .arg(&profile)
+        .args(["--seed", "1337", "--bytes", "8"])
+        .output()
+        .expect("binary should run");
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(stderr.contains("NGRAMV0\\0"));
+    assert!(stderr.contains("corpusforge profile build"));
 }
 
 #[test]
@@ -362,6 +486,19 @@ fn expected_fixture_summary(action: &str) -> String {
     format!(
         "{action}\nversion: 0\nprofile_hash: cff:d2fb375e2bda819d4746e0077823653fee6704c314d2c99e40953374add636c6\nfile_count: 3\nbyte_count: 212\n"
     )
+}
+
+fn build_repository_profile(temp: &TestDir) -> PathBuf {
+    let output_profile = temp.path().join("compiled.cff");
+    let build = corpusforge()
+        .args(["profile", "build"])
+        .arg(repository_fixtures_path())
+        .args(["--out"])
+        .arg(&output_profile)
+        .output()
+        .expect("binary should run");
+    assert!(build.status.success());
+    output_profile
 }
 
 fn repository_fixtures_path() -> PathBuf {
