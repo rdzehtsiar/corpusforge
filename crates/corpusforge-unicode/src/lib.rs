@@ -2,6 +2,8 @@
 
 //! Placeholder crate for CorpusForge Unicode adversarial cases.
 
+use corpusforge_core::rng::{DeterministicStream, DOMAIN_UNICODE};
+use corpusforge_core::seed::MasterSeed;
 use corpusforge_core::{CorpusForgeError, Result};
 use std::fmt::{self, Display, Formatter};
 use std::str::FromStr;
@@ -170,6 +172,99 @@ pub fn validate_mode_output(mode: UnicodeMode, output_kind: UnicodeOutputKind) -
     )))
 }
 
+const GRAPHEME_FIXTURES: &[&str] = &[
+    "a\u{0301}",
+    "\u{0915}\u{094D}\u{0937}\u{093F}",
+    "\u{0BA8}\u{0BBF}",
+    "\u{D55C}\u{AE00}",
+    "Z\u{0351}\u{0357}\u{0323}",
+];
+
+const BIDI_FIXTURES: &[&str] = &[
+    "abc\u{202E}fed\u{202C}",
+    "left\u{2067}\u{05D9}\u{05DE}\u{05D9}\u{05DF}\u{2069}right",
+    "\u{200F}rtl marker",
+    "A\u{061C}+B",
+    "start\u{202A}ltr\u{202C}end",
+];
+
+const ZERO_WIDTH_FIXTURES: &[&str] = &[
+    "zero\u{200B}width",
+    "join\u{200D}er",
+    "word\u{2060}joiner",
+    "bom\u{FEFF}inside",
+    "soft\u{00AD}hyphen",
+];
+
+const EMOJI_FIXTURES: &[&str] = &[
+    "\u{1F469}\u{200D}\u{1F4BB}",
+    "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}",
+    "\u{1F3F3}\u{FE0F}\u{200D}\u{1F308}",
+    "\u{1F44D}\u{1F3FD}",
+    "5\u{FE0F}\u{20E3}",
+];
+
+const NORMALIZATION_FIXTURES: &[&str] =
+    &["\u{00E9}", "e\u{0301}", "\u{00C5}", "A\u{030A}", "\u{212B}"];
+
+const VALID_TEXT_FAMILIES: &[&[&str]] = &[
+    GRAPHEME_FIXTURES,
+    BIDI_FIXTURES,
+    ZERO_WIDTH_FIXTURES,
+    EMOJI_FIXTURES,
+    NORMALIZATION_FIXTURES,
+];
+
+/// Generates deterministic valid UTF-8 Unicode adversarial text cases.
+pub fn generate_valid_text(
+    master_seed: &MasterSeed,
+    mode: UnicodeMode,
+    case_count: usize,
+) -> Result<String> {
+    validate_mode_output(mode, UnicodeOutputKind::ValidText)?;
+
+    if case_count == 0 {
+        return Ok(String::new());
+    }
+
+    let context = format!("valid-text/v1/{}", mode.label());
+    let mut stream =
+        DeterministicStream::from_seed_with_context(master_seed, DOMAIN_UNICODE, context);
+    let mut output = String::new();
+
+    for case_index in 0..case_count {
+        if case_index > 0 {
+            output.push('\n');
+        }
+
+        let fixture = sample_valid_text_fixture(mode, &mut stream)?;
+        output.push_str(fixture);
+    }
+
+    Ok(output)
+}
+
+fn sample_valid_text_fixture(
+    mode: UnicodeMode,
+    stream: &mut DeterministicStream,
+) -> Result<&'static str> {
+    let fixtures = match mode {
+        UnicodeMode::Grapheme => GRAPHEME_FIXTURES,
+        UnicodeMode::Bidi => BIDI_FIXTURES,
+        UnicodeMode::ZeroWidth => ZERO_WIDTH_FIXTURES,
+        UnicodeMode::Emoji => EMOJI_FIXTURES,
+        UnicodeMode::Normalization => NORMALIZATION_FIXTURES,
+        UnicodeMode::Mixed => {
+            let family_index = stream.usize_below(VALID_TEXT_FAMILIES.len())?;
+            VALID_TEXT_FAMILIES[family_index]
+        }
+        UnicodeMode::InvalidUtf8 => unreachable!("invalid UTF-8 is rejected before sampling"),
+    };
+
+    let fixture_index = stream.usize_below(fixtures.len())?;
+    Ok(fixtures[fixture_index])
+}
+
 fn stable_labels<T: Copy + Display, const N: usize>(items: &[T; N]) -> String {
     items
         .iter()
@@ -181,8 +276,16 @@ fn stable_labels<T: Copy + Display, const N: usize>(items: &[T; N]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        crate_name, validate_mode_output, UnicodeFixtureSpec, UnicodeMode, UnicodeOutputKind,
+        crate_name, generate_valid_text, validate_mode_output, UnicodeFixtureSpec, UnicodeMode,
+        UnicodeOutputKind, BIDI_FIXTURES, EMOJI_FIXTURES, GRAPHEME_FIXTURES,
+        NORMALIZATION_FIXTURES, VALID_TEXT_FAMILIES, ZERO_WIDTH_FIXTURES,
     };
+    use corpusforge_core::seed::MasterSeed;
+
+    const TEST_SEED: MasterSeed = MasterSeed::from_bytes([
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+        25, 26, 27, 28, 29, 30, 31,
+    ]);
 
     #[test]
     fn exposes_crate_name() {
@@ -280,6 +383,122 @@ mod tests {
 
             UnicodeFixtureSpec::new(mode, UnicodeOutputKind::ValidText)
                 .expect("valid Unicode modes should support valid text output");
+        }
+    }
+
+    #[test]
+    fn valid_text_generation_is_deterministic_for_same_seed_mode_and_count() {
+        let left = generate_valid_text(&TEST_SEED, UnicodeMode::Grapheme, 12)
+            .expect("valid-text generation should succeed");
+        let right = generate_valid_text(&TEST_SEED, UnicodeMode::Grapheme, 12)
+            .expect("valid-text generation should succeed");
+
+        assert_eq!(left, right);
+    }
+
+    #[test]
+    fn valid_text_generation_uses_mode_specific_stream_context() {
+        let grapheme = generate_valid_text(&TEST_SEED, UnicodeMode::Grapheme, 8)
+            .expect("grapheme generation should succeed");
+        let emoji = generate_valid_text(&TEST_SEED, UnicodeMode::Emoji, 8)
+            .expect("emoji generation should succeed");
+
+        assert_ne!(grapheme, emoji);
+    }
+
+    #[test]
+    fn valid_text_generation_rejects_invalid_utf8_mode() {
+        let error = generate_valid_text(&TEST_SEED, UnicodeMode::InvalidUtf8, 1)
+            .expect_err("invalid-utf8 mode must not generate valid text");
+
+        assert_eq!(error.category(), "invalid_argument");
+        assert!(error.to_string().contains("invalid-utf8"));
+        assert!(error.to_string().contains("valid-text"));
+    }
+
+    #[test]
+    fn valid_text_generation_returns_empty_string_for_zero_count() {
+        let output = generate_valid_text(&TEST_SEED, UnicodeMode::Mixed, 0)
+            .expect("zero valid-text cases should succeed");
+
+        assert_eq!(output, "");
+    }
+
+    #[test]
+    fn every_valid_text_mode_generates_non_empty_valid_utf8() {
+        for mode in UnicodeMode::ALL {
+            if mode == UnicodeMode::InvalidUtf8 {
+                continue;
+            }
+
+            let output = generate_valid_text(&TEST_SEED, mode, 3)
+                .expect("valid-text mode should generate valid UTF-8");
+
+            assert!(!output.is_empty(), "{mode} output should not be empty");
+            assert!(std::str::from_utf8(output.as_bytes()).is_ok());
+        }
+    }
+
+    #[test]
+    fn valid_text_fixture_families_cover_required_categories() {
+        assert!(
+            GRAPHEME_FIXTURES
+                .iter()
+                .any(|fixture| fixture.contains('\u{0301}')),
+            "grapheme fixtures should include combining marks"
+        );
+        assert!(
+            BIDI_FIXTURES
+                .iter()
+                .any(|fixture| fixture.contains('\u{202E}') || fixture.contains('\u{2067}')),
+            "bidi fixtures should include directional controls"
+        );
+        assert!(
+            ZERO_WIDTH_FIXTURES
+                .iter()
+                .any(|fixture| fixture.contains('\u{200B}') || fixture.contains('\u{200D}')),
+            "zero-width fixtures should include invisible controls"
+        );
+        assert!(
+            EMOJI_FIXTURES
+                .iter()
+                .any(|fixture| fixture.contains('\u{1F469}') || fixture.contains('\u{1F44D}')),
+            "emoji fixtures should include emoji sequences"
+        );
+        assert!(
+            NORMALIZATION_FIXTURES
+                .iter()
+                .any(|fixture| fixture.contains('\u{0301}') || fixture.contains('\u{212B}')),
+            "normalization fixtures should include composed or compatibility variants"
+        );
+        assert_eq!(VALID_TEXT_FAMILIES.len(), 5);
+    }
+
+    #[test]
+    fn mixed_valid_text_generation_samples_only_valid_fixture_families() {
+        let output = generate_valid_text(&TEST_SEED, UnicodeMode::Mixed, 64)
+            .expect("mixed valid-text generation should succeed");
+
+        assert!(!output.is_empty());
+        assert!(!output.contains('\u{FFFD}'));
+
+        let sampled_family_count = VALID_TEXT_FAMILIES
+            .iter()
+            .filter(|fixtures| output.lines().any(|case| fixtures.contains(&case)))
+            .count();
+
+        assert!(
+            sampled_family_count > 1,
+            "mixed mode should sample across valid-text fixture families"
+        );
+
+        for case in output.lines() {
+            assert!(
+                VALID_TEXT_FAMILIES
+                    .iter()
+                    .any(|fixtures| fixtures.contains(&case)),
+                "mixed case should come from a valid-text family: {case:?}"
+            );
         }
     }
 }
