@@ -2236,13 +2236,11 @@ mod tests {
     }
 
     fn temp_report_path(name: &str) -> std::path::PathBuf {
-        std::env::current_dir()
-            .expect("current directory should be available")
-            .join("target")
-            .join(format!(
-                "corpusforge-cli-{name}-{}.json",
-                std::process::id()
-            ))
+        let dir =
+            std::env::temp_dir().join(format!("corpusforge-cli-tests-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temporary report directory should be writable");
+
+        dir.join(format!("corpusforge-cli-{name}.json"))
     }
 
     fn json_escape_for_test(value: &str) -> String {
