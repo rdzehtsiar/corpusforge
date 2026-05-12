@@ -262,6 +262,26 @@ fn binary_gen_stdout_emits_exact_deterministic_bytes() {
 }
 
 #[test]
+fn binary_gen_repository_profile_seed_1337_matches_golden_hex() {
+    let temp = TestDir::new("gen-golden");
+    let profile = build_repository_profile(&temp);
+
+    let output = corpusforge()
+        .args(["gen", "--profile"])
+        .arg(&profile)
+        .args(["--seed", "1337", "--bytes", "64"])
+        .output()
+        .expect("binary should run");
+
+    assert!(output.status.success());
+    assert_eq!(
+        bytes_to_hex(&output.stdout),
+        fixture("seed_1337_repository_fixtures_ngram.hex")
+    );
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
 fn binary_gen_out_writes_exact_bytes_and_summary() {
     let temp = TestDir::new("gen-out");
     let profile = build_repository_profile(&temp);
@@ -503,6 +523,27 @@ fn build_repository_profile(temp: &TestDir) -> PathBuf {
 
 fn repository_fixtures_path() -> PathBuf {
     workspace_root().join("tests").join("fixtures")
+}
+
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        hex.push(HEX[(byte >> 4) as usize] as char);
+        hex.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    hex
+}
+
+fn fixture(name: &str) -> &'static str {
+    match name {
+        "seed_1337_repository_fixtures_ngram.hex" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/golden/seed_1337_repository_fixtures_ngram.hex"
+        ))
+        .trim(),
+        _ => panic!("unknown golden fixture '{name}'"),
+    }
 }
 
 fn workspace_root() -> PathBuf {
