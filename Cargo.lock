@@ -89,6 +89,7 @@ version = "0.1.0"
 dependencies = [
  "corpusforge-cff",
  "corpusforge-core",
+ "corpusforge-ngram",
 ]
 
 [[package]]

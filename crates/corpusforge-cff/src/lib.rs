@@ -12,11 +12,14 @@ const PAYLOAD_LENGTH_OFFSET: usize = VERSION_OFFSET + 2;
 const PAYLOAD_HASH_OFFSET: usize = PAYLOAD_LENGTH_OFFSET + 8;
 const PROFILE_HASH_OFFSET: usize = PAYLOAD_HASH_OFFSET + 32;
 const PROFILE_HASH_DOMAIN: &[u8] = b"corpusforge.cff.v0.profile\0";
+/// Section id for embedded byte bigram n-gram models.
+pub const NGRAM_MODEL_SECTION_ID: [u8; 8] = *b"NGRAMV0\0";
 
 /// A deterministic `.cff` profile pack with canonical file ordering.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProfilePack {
     files: Vec<ProfileFile>,
+    sections: Vec<ProfileSection>,
 }
 
 impl ProfilePack {
@@ -24,12 +27,51 @@ impl ProfilePack {
     pub fn new(mut files: Vec<ProfileFile>) -> Result<Self> {
         files.sort_by(|left, right| left.path.cmp(&right.path));
         ensure_unique_paths(&files)?;
-        Ok(Self { files })
+        Ok(Self {
+            files,
+            sections: Vec::new(),
+        })
     }
 
     /// Returns the files in deterministic path order.
     pub fn files(&self) -> &[ProfileFile] {
         &self.files
+    }
+
+    /// Returns a copy of this pack with an embedded byte bigram n-gram model section.
+    pub fn with_ngram_model(mut self, model_bytes: impl Into<Vec<u8>>) -> Result<Self> {
+        let bytes = model_bytes.into();
+        if bytes.is_empty() {
+            return Err(CorpusForgeError::invalid_profile(
+                "n-gram model section is empty; compile the profile from at least one non-empty fixture",
+            ));
+        }
+
+        if self
+            .sections
+            .iter()
+            .any(|section| section.id == NGRAM_MODEL_SECTION_ID)
+        {
+            return Err(CorpusForgeError::invalid_profile(
+                "duplicate NGRAMV0 section; each .cff profile may contain one n-gram model",
+            ));
+        }
+
+        self.sections.push(ProfileSection {
+            id: NGRAM_MODEL_SECTION_ID,
+            bytes,
+        });
+        self.sections.sort_by_key(|section| section.id);
+        ensure_canonical_sections(&self.sections)?;
+        Ok(self)
+    }
+
+    /// Returns the embedded byte bigram n-gram model bytes when present.
+    pub fn ngram_model_bytes(&self) -> Option<&[u8]> {
+        self.sections
+            .iter()
+            .find(|section| section.id == NGRAM_MODEL_SECTION_ID)
+            .map(|section| section.bytes.as_slice())
     }
 
     /// Serializes this profile pack to the `.cff` v0 binary envelope.
@@ -89,6 +131,12 @@ impl ProfileFile {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ProfileSection {
+    id: [u8; 8],
+    bytes: Vec<u8>,
+}
+
 /// Human- and machine-readable summary of a verified or in-memory pack.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InspectSummary {
@@ -106,6 +154,14 @@ pub struct InspectSummary {
     pub total_file_bytes: u64,
     /// Stable relative paths in deterministic order.
     pub file_paths: Vec<String>,
+    /// Number of embedded deterministic payload sections.
+    pub section_count: usize,
+    /// Section identifiers in canonical byte order.
+    pub section_ids: Vec<String>,
+    /// Whether this pack embeds an n-gram model section.
+    pub has_ngram_model: bool,
+    /// Embedded n-gram model byte length when present.
+    pub ngram_model_bytes: Option<u64>,
 }
 
 /// Serializes a profile pack to the `.cff` v0 binary envelope.
@@ -164,6 +220,16 @@ fn encode_payload(pack: &ProfilePack) -> Vec<u8> {
         payload.extend_from_slice(&file.bytes);
     }
 
+    if !pack.sections.is_empty() {
+        payload.extend_from_slice(&(pack.sections.len() as u32).to_le_bytes());
+
+        for section in &pack.sections {
+            payload.extend_from_slice(&section.id);
+            payload.extend_from_slice(&(section.bytes.len() as u64).to_le_bytes());
+            payload.extend_from_slice(&section.bytes);
+        }
+    }
+
     payload
 }
 
@@ -192,15 +258,52 @@ fn decode_payload(payload: &[u8]) -> Result<ProfilePack> {
         files.push(ProfileFile::new(path.to_owned(), bytes)?);
     }
 
+    let sections = if cursor.remaining() == 0 {
+        Vec::new()
+    } else {
+        decode_sections(&mut cursor)?
+    };
+
+    ensure_canonical_order(&files)?;
+    Ok(ProfilePack { files, sections })
+}
+
+fn decode_sections(cursor: &mut Cursor<'_>) -> Result<Vec<ProfileSection>> {
+    let section_count = cursor.read_u32("section count")? as usize;
+    if section_count == 0 {
+        return Err(CorpusForgeError::invalid_profile(
+            "section table declares zero sections; omit the section table for a no-section .cff profile",
+        ));
+    }
+
+    let mut sections = Vec::new();
+    for index in 0..section_count {
+        let id = read_array(cursor.read_exact(8, "section id")?);
+        let byte_len = cursor.read_u64("section byte length")?;
+        let byte_len = usize::try_from(byte_len).map_err(|_| {
+            CorpusForgeError::invalid_profile(format!(
+                "section {} byte length exceeds this platform; regenerate the profile with a supported size",
+                section_id_label(&id)
+            ))
+        })?;
+        let bytes = cursor.read_exact(byte_len, "section bytes")?.to_vec();
+        sections.push(ProfileSection { id, bytes });
+
+        if let Err(error) = ensure_canonical_sections(&sections) {
+            return Err(CorpusForgeError::invalid_profile(format!(
+                "section table entry {index} is not canonical: {error}"
+            )));
+        }
+    }
+
     if cursor.remaining() != 0 {
         return Err(CorpusForgeError::invalid_profile(format!(
-            "payload has {} trailing byte(s); rewrite the profile with canonical .cff v0 encoding",
+            "payload has {} trailing byte(s) after the section table; rewrite the profile with canonical .cff v0 encoding",
             cursor.remaining()
         )));
     }
 
-    ensure_canonical_order(&files)?;
-    Ok(ProfilePack { files })
+    Ok(sections)
 }
 
 fn read_verified_payload(bytes: &[u8]) -> Result<(Header, &[u8])> {
@@ -292,6 +395,14 @@ fn inspect_payload(pack: &ProfilePack, payload: &[u8]) -> InspectSummary {
         profile_hash: format!("cff:{}", profile_hash_digest(payload).to_hex()),
         total_file_bytes: pack.files.iter().map(|file| file.bytes.len() as u64).sum(),
         file_paths: pack.files.iter().map(|file| file.path.clone()).collect(),
+        section_count: pack.sections.len(),
+        section_ids: pack
+            .sections
+            .iter()
+            .map(|section| section_id_label(&section.id))
+            .collect(),
+        has_ngram_model: pack.ngram_model_bytes().is_some(),
+        ngram_model_bytes: pack.ngram_model_bytes().map(|bytes| bytes.len() as u64),
     }
 }
 
@@ -325,6 +436,38 @@ fn ensure_canonical_order(files: &[ProfileFile]) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn ensure_canonical_sections(sections: &[ProfileSection]) -> Result<()> {
+    for pair in sections.windows(2) {
+        if pair[0].id == pair[1].id {
+            return Err(CorpusForgeError::invalid_profile(format!(
+                "duplicate section `{}`; each .cff section id must be unique",
+                section_id_label(&pair[0].id)
+            )));
+        }
+
+        if pair[0].id > pair[1].id {
+            return Err(CorpusForgeError::invalid_profile(
+                "sections are not in canonical id order; rewrite the profile with deterministic .cff v0 serialization",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn section_id_label(id: &[u8; 8]) -> String {
+    let mut label = String::new();
+    for &byte in id {
+        match byte {
+            b'\\' => label.push_str("\\\\"),
+            0 => label.push_str("\\0"),
+            0x20..=0x7e => label.push(byte as char),
+            _ => label.push_str(&format!("\\x{byte:02x}")),
+        }
+    }
+    label
 }
 
 fn validate_path(path: &str) -> Result<()> {
@@ -440,8 +583,127 @@ mod tests {
                         .to_owned(),
                 total_file_bytes: 16,
                 file_paths: vec!["alpha.txt".to_owned(), "nested/beta.bin".to_owned()],
+                section_count: 0,
+                section_ids: Vec::new(),
+                has_ngram_model: false,
+                ngram_model_bytes: None,
             }
         );
+    }
+
+    #[test]
+    fn sectioned_pack_round_trips_and_exposes_ngram_model() {
+        let model_bytes = b"serialized byte bigram model".to_vec();
+        let pack = sample_pack()
+            .with_ngram_model(model_bytes.clone())
+            .expect("model section should be added");
+        let bytes = pack.to_bytes();
+
+        let decoded = ProfilePack::from_bytes(&bytes).expect("sectioned pack should decode");
+        let summary = ProfilePack::verify_bytes(&bytes).expect("sectioned pack should verify");
+
+        assert_eq!(decoded, pack);
+        assert_eq!(decoded.ngram_model_bytes(), Some(model_bytes.as_slice()));
+        assert_eq!(summary.section_count, 1);
+        assert_eq!(summary.section_ids, vec!["NGRAMV0\\0".to_owned()]);
+        assert!(summary.has_ngram_model);
+        assert_eq!(summary.ngram_model_bytes, Some(model_bytes.len() as u64));
+    }
+
+    #[test]
+    fn sectioned_pack_hash_is_stable_for_identical_content() {
+        let first = sample_pack()
+            .with_ngram_model(b"model bytes".to_vec())
+            .expect("model section should be added");
+        let second = sample_pack()
+            .with_ngram_model(b"model bytes".to_vec())
+            .expect("model section should be added");
+
+        assert_eq!(first.to_bytes(), second.to_bytes());
+        assert_eq!(first.profile_hash(), second.profile_hash());
+    }
+
+    #[test]
+    fn legacy_no_section_payload_still_reads_and_verifies() {
+        let pack = sample_pack();
+        let bytes = pack.to_bytes();
+
+        let decoded = ProfilePack::from_bytes(&bytes).expect("legacy pack should decode");
+        let summary = ProfilePack::verify_bytes(&bytes).expect("legacy pack should verify");
+
+        assert!(decoded.ngram_model_bytes().is_none());
+        assert_eq!(summary.section_count, 0);
+        assert!(!summary.has_ngram_model);
+    }
+
+    #[test]
+    fn duplicate_sections_fail_cleanly() {
+        let mut payload = encode_payload(&sample_pack());
+        payload.extend_from_slice(&2_u32.to_le_bytes());
+        append_section(&mut payload, NGRAM_MODEL_SECTION_ID, b"first");
+        append_section(&mut payload, NGRAM_MODEL_SECTION_ID, b"second");
+        let bytes = envelope_payload(&payload);
+
+        let error = ProfilePack::from_bytes(&bytes).expect_err("duplicate section should fail");
+
+        assert_eq!(error.category(), "invalid_profile");
+        assert!(error.to_string().contains("duplicate section"));
+        assert!(error.to_string().contains("NGRAMV0\\0"));
+    }
+
+    #[test]
+    fn unsorted_sections_fail_cleanly() {
+        let mut payload = encode_payload(&sample_pack());
+        payload.extend_from_slice(&2_u32.to_le_bytes());
+        append_section(&mut payload, *b"ZZZZZZZZ", b"last");
+        append_section(&mut payload, *b"AAAAAAAA", b"first");
+        let bytes = envelope_payload(&payload);
+
+        let error = ProfilePack::from_bytes(&bytes).expect_err("unsorted section should fail");
+
+        assert_eq!(error.category(), "invalid_profile");
+        assert!(error.to_string().contains("canonical id order"));
+    }
+
+    #[test]
+    fn truncated_section_data_fails_cleanly() {
+        let mut payload = encode_payload(&sample_pack());
+        payload.extend_from_slice(&1_u32.to_le_bytes());
+        payload.extend_from_slice(&NGRAM_MODEL_SECTION_ID);
+        payload.extend_from_slice(&8_u64.to_le_bytes());
+        payload.extend_from_slice(b"short");
+        let bytes = envelope_payload(&payload);
+
+        let error = ProfilePack::from_bytes(&bytes).expect_err("truncated section should fail");
+
+        assert_eq!(error.category(), "invalid_profile");
+        assert!(error.to_string().contains("truncated"));
+        assert!(error.to_string().contains("section bytes"));
+    }
+
+    #[test]
+    fn zero_count_section_table_fails_cleanly() {
+        let mut payload = encode_payload(&sample_pack());
+        payload.extend_from_slice(&0_u32.to_le_bytes());
+        let bytes = envelope_payload(&payload);
+
+        let error = ProfilePack::from_bytes(&bytes).expect_err("zero section table should fail");
+
+        assert_eq!(error.category(), "invalid_profile");
+        assert!(error.to_string().contains("zero sections"));
+    }
+
+    #[test]
+    fn malformed_large_section_count_fails_cleanly() {
+        let mut payload = encode_payload(&sample_pack());
+        payload.extend_from_slice(&u32::MAX.to_le_bytes());
+        let bytes = envelope_payload(&payload);
+
+        let error =
+            ProfilePack::from_bytes(&bytes).expect_err("malformed section table should fail");
+
+        assert_eq!(error.category(), "invalid_profile");
+        assert!(error.to_string().contains("section id"));
     }
 
     #[test]
@@ -519,5 +781,24 @@ mod tests {
             ProfileFile::new("alpha.txt", b"unicode:\xe2\x80\x8d".to_vec()).expect("valid file"),
         ])
         .expect("valid pack")
+    }
+
+    fn append_section(payload: &mut Vec<u8>, id: [u8; 8], bytes: &[u8]) {
+        payload.extend_from_slice(&id);
+        payload.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+        payload.extend_from_slice(bytes);
+    }
+
+    fn envelope_payload(payload: &[u8]) -> Vec<u8> {
+        let payload_hash = blake3::hash(payload);
+        let profile_hash = profile_hash_digest(payload);
+        let mut bytes = Vec::with_capacity(HEADER_LEN + payload.len());
+        bytes.extend_from_slice(&MAGIC);
+        bytes.extend_from_slice(&VERSION.to_le_bytes());
+        bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(payload_hash.as_bytes());
+        bytes.extend_from_slice(profile_hash.as_bytes());
+        bytes.extend_from_slice(payload);
+        bytes
     }
 }

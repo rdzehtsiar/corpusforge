@@ -360,7 +360,7 @@ fn assert_profile_summary(stdout: &str) {
 
 fn expected_fixture_summary(action: &str) -> String {
     format!(
-        "{action}\nversion: 0\nprofile_hash: cff:89032e98406a81eed8adf514815d595b7f3854b3b7cdcc95df7276fe5d46e84f\nfile_count: 3\nbyte_count: 212\n"
+        "{action}\nversion: 0\nprofile_hash: cff:d2fb375e2bda819d4746e0077823653fee6704c314d2c99e40953374add636c6\nfile_count: 3\nbyte_count: 212\n"
     )
 }
 

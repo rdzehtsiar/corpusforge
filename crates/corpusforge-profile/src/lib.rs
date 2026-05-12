@@ -7,6 +7,7 @@ use std::path::{Component, Path};
 
 use corpusforge_cff::{ProfileFile, ProfilePack};
 use corpusforge_core::{CorpusForgeError, Result};
+use corpusforge_ngram::ByteBigramModel;
 
 /// Returns the crate identifier used in workspace smoke tests.
 pub const fn crate_name() -> &'static str {
@@ -43,7 +44,16 @@ pub fn compile_path(path: impl AsRef<Path>) -> Result<ProfilePack> {
     }
 
     files.sort_by(|left, right| left.path().cmp(right.path()));
-    ProfilePack::new(files)
+    let model = compile_ngram_model(&files)?;
+    ProfilePack::new(files)?.with_ngram_model(model.to_bytes())
+}
+
+fn compile_ngram_model(files: &[ProfileFile]) -> Result<ByteBigramModel> {
+    ByteBigramModel::compile_from_slices(files.iter().map(ProfileFile::bytes)).map_err(|error| {
+        CorpusForgeError::invalid_profile(format!(
+            "cannot build byte bigram n-gram model from profile fixtures: {error}; add at least one non-empty fixture file"
+        ))
+    })
 }
 
 fn compile_directory(root: &Path) -> Result<Vec<ProfileFile>> {
@@ -132,6 +142,7 @@ fn stable_relative_path(path: &Path) -> Result<String> {
 mod tests {
     use super::{compile_path, crate_name};
     use corpusforge_cff::InspectSummary;
+    use corpusforge_ngram::ByteBigramModel;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -151,6 +162,7 @@ mod tests {
         assert_eq!(pack.files().len(), 1);
         assert_eq!(pack.files()[0].path(), "fixture.txt");
         assert_eq!(pack.files()[0].bytes(), b"alpha\nbeta");
+        assert!(pack.ngram_model_bytes().is_some());
     }
 
     #[test]
@@ -190,6 +202,19 @@ mod tests {
     }
 
     #[test]
+    fn all_empty_files_reject_cleanly() {
+        let temp = TestDir::new("all-empty");
+        temp.write("empty-one.txt", b"");
+        temp.write("nested/empty-two.txt", b"");
+
+        let error = compile_path(temp.path()).expect_err("all-empty input should fail");
+
+        assert_eq!(error.category(), "invalid_profile");
+        assert!(error.to_string().contains("byte bigram n-gram model"));
+        assert!(error.to_string().contains("non-empty fixture"));
+    }
+
+    #[test]
     fn missing_path_rejects_cleanly() {
         let temp = TestDir::new("missing-path");
 
@@ -220,16 +245,21 @@ mod tests {
             .expect("repository fixtures should compile again");
 
         assert_eq!(pack.profile_hash(), rebuilt.profile_hash());
+        ByteBigramModel::from_bytes(
+            pack.ngram_model_bytes()
+                .expect("compiled pack should embed an n-gram model"),
+        )
+        .expect("embedded n-gram model should decode");
         assert_eq!(
             pack.inspect(),
             InspectSummary {
                 version: 0,
                 file_count: 3,
-                payload_length: 293,
-                payload_hash: "1ad382a37077bfb06fc3be28e0a046c64e120fc85519003dec929a4fe2f1ac18"
+                payload_length: 1935,
+                payload_hash: "c50dcb883da67d6b9b6671cf216bada5c05fbdc20fa49941f293e6e536a2d02d"
                     .to_owned(),
                 profile_hash:
-                    "cff:89032e98406a81eed8adf514815d595b7f3854b3b7cdcc95df7276fe5d46e84f"
+                    "cff:d2fb375e2bda819d4746e0077823653fee6704c314d2c99e40953374add636c6"
                         .to_owned(),
                 total_file_bytes: 212,
                 file_paths: vec![
@@ -237,6 +267,10 @@ mod tests {
                     "basic_unicode.txt".to_owned(),
                     "empty.txt".to_owned(),
                 ],
+                section_count: 1,
+                section_ids: vec!["NGRAMV0\\0".to_owned()],
+                has_ngram_model: true,
+                ngram_model_bytes: Some(1622),
             }
         );
     }

@@ -10,6 +10,7 @@ description = "CorpusForge profile compiler placeholders"
 [dependencies]
 corpusforge-cff = { path = "../corpusforge-cff" }
 corpusforge-core = { path = "../corpusforge-core" }
+corpusforge-ngram = { path = "../corpusforge-ngram" }
 
 [lints]
 workspace = true
