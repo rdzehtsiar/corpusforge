@@ -99,6 +99,9 @@ version = "0.1.0"
 [[package]]
 name = "corpusforge-unicode"
 version = "0.1.0"
+dependencies = [
+ "corpusforge-core",
+]
 
 [[package]]
 name = "cpufeatures"
