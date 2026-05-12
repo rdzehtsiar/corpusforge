@@ -102,6 +102,14 @@ name = "corpusforge-testkit"
 version = "0.1.0"
 
 [[package]]
+name = "corpusforge-tokenizer"
+version = "0.1.0"
+dependencies = [
+ "corpusforge-core",
+ "corpusforge-unicode",
+]
+
+[[package]]
 name = "corpusforge-unicode"
 version = "0.1.0"
 dependencies = [

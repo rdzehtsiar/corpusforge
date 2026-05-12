@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "corpusforge-tokenizer"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Tokenizer harness case specs and stable reports for CorpusForge"
+
+[dependencies]
+corpusforge-core = { path = "../corpusforge-core" }
+corpusforge-unicode = { path = "../corpusforge-unicode" }
+
+[lints]
+workspace = true

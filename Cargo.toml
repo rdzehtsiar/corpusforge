@@ -8,6 +8,7 @@ members = [
     "crates/corpusforge-profile",
     "crates/corpusforge-shrink",
     "crates/corpusforge-testkit",
+    "crates/corpusforge-tokenizer",
     "crates/corpusforge-unicode",
 ]
 
