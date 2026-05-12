@@ -414,49 +414,15 @@ fn parse_common_options(command: &CommandSpec, args: &[OsString]) -> Result<()> 
     while index < args.len() {
         let flag = args[index].to_string_lossy();
 
+        if let Some(option) = common_value_option(flag.as_ref()) {
+            option.claim(&mut state)?;
+            let value = take_value(command, args, index, option.flag())?;
+            option.validate(&value)?;
+            index += 2;
+            continue;
+        }
+
         match flag.as_ref() {
-            "--seed" => {
-                state.claim_seed("--seed")?;
-                let value = take_value(command, args, index, "--seed")?;
-                validate_non_empty(&value, "--seed")?;
-                index += 2;
-            }
-            "--seed-file" => {
-                state.claim_seed("--seed-file")?;
-                let value = take_value(command, args, index, "--seed-file")?;
-                validate_non_empty(&value, "--seed-file")?;
-                index += 2;
-            }
-            "--profile" => {
-                state.claim_once("profile", "--profile")?;
-                let value = take_value(command, args, index, "--profile")?;
-                validate_non_empty(&value, "--profile")?;
-                index += 2;
-            }
-            "--out" => {
-                state.claim_once("out", "--out")?;
-                let value = take_value(command, args, index, "--out")?;
-                validate_non_empty(&value, "--out")?;
-                index += 2;
-            }
-            "--bytes" => {
-                state.claim_once("bytes", "--bytes")?;
-                let value = take_value(command, args, index, "--bytes")?;
-                parse_byte_size(&value)?;
-                index += 2;
-            }
-            "--determinism" => {
-                state.claim_once("determinism", "--determinism")?;
-                let value = take_value(command, args, index, "--determinism")?;
-                parse_determinism(&value)?;
-                index += 2;
-            }
-            "--metadata-out" => {
-                state.claim_once("metadata_out", "--metadata-out")?;
-                let value = take_value(command, args, index, "--metadata-out")?;
-                validate_non_empty(&value, "--metadata-out")?;
-                index += 2;
-            }
             "--quiet" => {
                 state.claim_once("quiet", "--quiet")?;
                 index += 1;
@@ -487,6 +453,92 @@ fn parse_common_options(command: &CommandSpec, args: &[OsString]) -> Result<()> 
     }
 
     Ok(())
+}
+
+enum CommonValueOption {
+    Seed {
+        flag: &'static str,
+    },
+    Once {
+        field: &'static str,
+        flag: &'static str,
+        validation: CommonValueValidation,
+    },
+}
+
+impl CommonValueOption {
+    fn flag(&self) -> &'static str {
+        match self {
+            Self::Seed { flag } | Self::Once { flag, .. } => flag,
+        }
+    }
+
+    fn claim(&self, state: &mut CommonOptionState) -> Result<()> {
+        match self {
+            Self::Seed { flag } => state.claim_seed(flag),
+            Self::Once { field, flag, .. } => state.claim_once(field, flag),
+        }
+    }
+
+    fn validate(&self, value: &str) -> Result<()> {
+        match self {
+            Self::Seed { flag } => validate_non_empty(value, flag),
+            Self::Once {
+                flag, validation, ..
+            } => validation.validate(value, flag),
+        }
+    }
+}
+
+enum CommonValueValidation {
+    NonEmpty,
+    ByteSize,
+    Determinism,
+}
+
+impl CommonValueValidation {
+    fn validate(&self, value: &str, flag: &str) -> Result<()> {
+        match self {
+            Self::NonEmpty => validate_non_empty(value, flag),
+            Self::ByteSize => parse_byte_size(value).map(|_| ()),
+            Self::Determinism => parse_determinism(value),
+        }
+    }
+}
+
+fn common_value_option(flag: &str) -> Option<CommonValueOption> {
+    match flag {
+        "--seed" => Some(CommonValueOption::Seed { flag: "--seed" }),
+        "--seed-file" => Some(CommonValueOption::Seed {
+            flag: "--seed-file",
+        }),
+        "--profile" => Some(CommonValueOption::Once {
+            field: "profile",
+            flag: "--profile",
+            validation: CommonValueValidation::NonEmpty,
+        }),
+        "--out" => Some(CommonValueOption::Once {
+            field: "out",
+            flag: "--out",
+            validation: CommonValueValidation::NonEmpty,
+        }),
+        "--bytes" => Some(CommonValueOption::Once {
+            field: "bytes",
+            flag: "--bytes",
+            validation: CommonValueValidation::ByteSize,
+        }),
+        "--determinism" => Some(CommonValueOption::Once {
+            field: "determinism",
+            flag: "--determinism",
+            validation: CommonValueValidation::Determinism,
+        }),
+        "--metadata-out" => Some(CommonValueOption::Once {
+            field: "metadata_out",
+            flag: "--metadata-out",
+            validation: CommonValueValidation::NonEmpty,
+        }),
+        _ => None,
+    }
 }
 
 #[derive(Default)]
