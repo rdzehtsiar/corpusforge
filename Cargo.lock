@@ -66,6 +66,7 @@ dependencies = [
  "corpusforge-core",
  "corpusforge-ngram",
  "corpusforge-profile",
+ "corpusforge-tokenizer",
 ]
 
 [[package]]

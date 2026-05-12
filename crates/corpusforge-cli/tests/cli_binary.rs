@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use corpusforge_cff::{ProfileFile, ProfilePack};
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -53,6 +53,10 @@ fn binary_command_help_exits_successfully() {
             assert!(stdout.contains("--json"));
             if command == "gen" {
                 assert!(stdout.contains("generated binary bytes"));
+                assert!(stdout.contains("--unicode <mode>"));
+                assert!(stdout.contains("--output-kind <kind>"));
+                assert!(stdout.contains("--cases <N>"));
+                assert!(stdout.contains("invalid-utf8"));
                 assert!(!stdout.contains("Planned for a later milestone"));
             } else {
                 assert!(stdout.contains("EXAMPLES"));
@@ -72,6 +76,7 @@ fn binary_command_help_with_common_flags_exits_successfully() {
     let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
     assert!(stdout.contains("corpusforge gen"));
     assert!(stdout.contains("--bytes <N>"));
+    assert!(stdout.contains("--unicode <mode>"));
     assert!(stdout.contains("generated binary bytes"));
     assert!(!stdout.contains("Planned for a later milestone"));
 }
@@ -279,6 +284,185 @@ fn binary_gen_repository_profile_seed_1337_matches_golden_hex() {
         fixture("seed_1337_repository_fixtures_ngram.hex")
     );
     assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn binary_gen_unicode_valid_text_seed_1337_matches_golden_hex() {
+    let first = corpusforge()
+        .args([
+            "gen",
+            "--unicode",
+            "mixed",
+            "--output-kind",
+            "valid-text",
+            "--cases",
+            "12",
+            "--seed",
+            "1337",
+        ])
+        .output()
+        .expect("binary should run");
+
+    assert!(first.status.success());
+    assert!(first.stderr.is_empty());
+    assert_eq!(
+        bytes_to_hex(&first.stdout),
+        fixture("seed_1337_unicode_valid_text_mixed.hex")
+    );
+    assert!(std::str::from_utf8(&first.stdout).is_ok());
+    assert_ne!(first.stdout.last(), Some(&b'\n'));
+
+    let second = corpusforge()
+        .args([
+            "gen",
+            "--unicode",
+            "mixed",
+            "--output-kind",
+            "valid-text",
+            "--cases",
+            "12",
+            "--seed",
+            "1337",
+        ])
+        .output()
+        .expect("binary should run");
+
+    assert!(second.status.success());
+    assert_eq!(second.stdout, first.stdout);
+}
+
+#[test]
+fn binary_gen_unicode_raw_bytes_invalid_utf8_seed_1337_matches_golden_hex() {
+    let output = corpusforge()
+        .args([
+            "gen",
+            "--unicode",
+            "invalid-utf8",
+            "--output-kind",
+            "raw-bytes",
+            "--cases",
+            "12",
+            "--seed",
+            "1337",
+        ])
+        .output()
+        .expect("binary should run");
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        bytes_to_hex(&output.stdout),
+        fixture("seed_1337_unicode_raw_bytes_invalid_utf8.hex")
+    );
+    assert!(std::str::from_utf8(&output.stdout).is_err());
+    assert_ne!(output.stdout.last(), Some(&b'\n'));
+}
+
+#[test]
+fn binary_gen_unicode_out_writes_bytes_and_summary() {
+    let temp = TestDir::new("unicode-gen-out");
+    let out = temp.path().join("unicode.bin");
+
+    let output = corpusforge()
+        .args([
+            "gen",
+            "--unicode",
+            "mixed",
+            "--output-kind",
+            "valid-text",
+            "--cases",
+            "12",
+            "--seed",
+            "1337",
+            "--out",
+        ])
+        .arg(&out)
+        .output()
+        .expect("binary should run");
+
+    assert!(output.status.success());
+    let generated = fs::read(&out).expect("unicode output should exist");
+    assert_eq!(
+        bytes_to_hex(&generated),
+        fixture("seed_1337_unicode_valid_text_mixed.hex")
+    );
+    assert!(output.stderr.is_empty());
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    assert!(stdout.contains("generated unicode corpus"));
+    assert!(stdout.contains("unicode_mode: mixed"));
+    assert!(stdout.contains("output_kind: valid-text"));
+    assert!(stdout.contains("case_count: 12"));
+    assert!(stdout.contains(&format!("byte_count: {}", generated.len())));
+    assert!(stdout.contains("out:"));
+}
+
+#[test]
+fn binary_gen_unicode_rejects_missing_and_mixed_options() {
+    let cases: [(Vec<OsString>, &str); 4] = [
+        (
+            vec![
+                "gen".into(),
+                "--unicode".into(),
+                "mixed".into(),
+                "--cases".into(),
+                "12".into(),
+                "--seed".into(),
+                "1337".into(),
+            ],
+            "missing required option `--output-kind`",
+        ),
+        (
+            vec![
+                "gen".into(),
+                "--unicode".into(),
+                "mixed".into(),
+                "--output-kind".into(),
+                "valid-text".into(),
+                "--cases".into(),
+                "12".into(),
+                "--seed".into(),
+                "1337".into(),
+                "--bytes".into(),
+                "64".into(),
+            ],
+            "cannot be mixed",
+        ),
+        (
+            vec![
+                "gen".into(),
+                "--unicode".into(),
+                "mixed".into(),
+                "--output-kind".into(),
+                "valid-text".into(),
+                "--cases".into(),
+                "12".into(),
+                "--seed".into(),
+                "1337".into(),
+                "--json".into(),
+            ],
+            "only supported for profile-backed",
+        ),
+        (
+            vec![
+                "gen".into(),
+                "--unicode".into(),
+                "mixed".into(),
+                "--output-kind".into(),
+                "valid-text".into(),
+                "--cases".into(),
+                "12".into(),
+                "--seed".into(),
+                "1337".into(),
+                "--metadata-out".into(),
+                "metadata.json".into(),
+            ],
+            "only supported for profile-backed",
+        ),
+    ];
+
+    for (args, expected) in cases {
+        assert_invalid_argument(args, expected, expected);
+    }
 }
 
 #[test]
@@ -540,6 +724,16 @@ fn fixture(name: &str) -> &'static str {
         "seed_1337_repository_fixtures_ngram.hex" => include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../tests/golden/seed_1337_repository_fixtures_ngram.hex"
+        ))
+        .trim(),
+        "seed_1337_unicode_valid_text_mixed.hex" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/golden/seed_1337_unicode_valid_text_mixed.hex"
+        ))
+        .trim(),
+        "seed_1337_unicode_raw_bytes_invalid_utf8.hex" => include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/golden/seed_1337_unicode_raw_bytes_invalid_utf8.hex"
         ))
         .trim(),
         _ => panic!("unknown golden fixture '{name}'"),

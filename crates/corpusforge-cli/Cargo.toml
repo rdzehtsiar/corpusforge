@@ -12,6 +12,7 @@ corpusforge-cff = { path = "../corpusforge-cff" }
 corpusforge-core = { path = "../corpusforge-core" }
 corpusforge-ngram = { path = "../corpusforge-ngram" }
 corpusforge-profile = { path = "../corpusforge-profile" }
+corpusforge-tokenizer = { path = "../corpusforge-tokenizer" }
 
 [[bin]]
 name = "corpusforge"

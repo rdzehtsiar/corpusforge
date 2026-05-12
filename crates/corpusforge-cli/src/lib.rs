@@ -7,6 +7,9 @@ use corpusforge_core::seed::MasterSeed;
 use corpusforge_core::{CorpusForgeError, Result};
 use corpusforge_ngram::{ByteBigramModel, ENGINE_NAME, ENGINE_VERSION};
 use corpusforge_profile::compile_path;
+use corpusforge_tokenizer::{
+    generate_tokenizer_cases, TokenizerCaseSpec, UnicodeMode, UnicodeOutputKind,
+};
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::Write;
@@ -98,7 +101,13 @@ struct ProfileFileOptions {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-struct GenOptions {
+enum GenOptions {
+    Profile(ProfileGenOptions),
+    Unicode(UnicodeGenOptions),
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct ProfileGenOptions {
     profile: PathBuf,
     seed_source: SeedSource,
     byte_count: usize,
@@ -107,6 +116,16 @@ struct GenOptions {
     determinism: DeterminismMode,
     quiet: bool,
     json: bool,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct UnicodeGenOptions {
+    mode: UnicodeMode,
+    output_kind: UnicodeOutputKind,
+    case_count: usize,
+    seed_source: SeedSource,
+    out: Option<PathBuf>,
+    quiet: bool,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -383,6 +402,9 @@ fn parse_gen_options(args: &[OsString]) -> Result<GenOptions> {
     let mut profile = None;
     let mut seed_source = None;
     let mut byte_count = None;
+    let mut unicode_mode = None;
+    let mut output_kind = None;
+    let mut case_count = None;
     let mut out = None;
     let mut metadata_out = None;
     let mut determinism = DeterminismMode::Strict;
@@ -438,6 +460,36 @@ fn parse_gen_options(args: &[OsString]) -> Result<GenOptions> {
                         "byte size `{value}` exceeds this platform's maximum supported output size"
                     ))
                 })?);
+                index += 2;
+            }
+            "--unicode" => {
+                if unicode_mode.is_some() {
+                    return Err(CorpusForgeError::invalid_argument(
+                        "duplicate option `--unicode`",
+                    ));
+                }
+                let value = take_value(command, args, index, "--unicode")?;
+                unicode_mode = Some(UnicodeMode::from_str(&value)?);
+                index += 2;
+            }
+            "--output-kind" => {
+                if output_kind.is_some() {
+                    return Err(CorpusForgeError::invalid_argument(
+                        "duplicate option `--output-kind`",
+                    ));
+                }
+                let value = take_value(command, args, index, "--output-kind")?;
+                output_kind = Some(UnicodeOutputKind::from_str(&value)?);
+                index += 2;
+            }
+            "--cases" => {
+                if case_count.is_some() {
+                    return Err(CorpusForgeError::invalid_argument(
+                        "duplicate option `--cases`",
+                    ));
+                }
+                let value = take_value(command, args, index, "--cases")?;
+                case_count = Some(parse_case_count(&value)?);
                 index += 2;
             }
             "--out" => {
@@ -505,6 +557,61 @@ fn parse_gen_options(args: &[OsString]) -> Result<GenOptions> {
         }
     }
 
+    let uses_profile_path = profile.is_some() || byte_count.is_some();
+    let uses_unicode_path = unicode_mode.is_some() || output_kind.is_some() || case_count.is_some();
+
+    if uses_profile_path && uses_unicode_path {
+        return Err(CorpusForgeError::invalid_argument(
+            "`gen` profile/bytes options cannot be mixed with `--unicode`, `--output-kind`, or `--cases`",
+        ));
+    }
+
+    if uses_unicode_path {
+        if json {
+            return Err(CorpusForgeError::invalid_argument(
+                "`--json` is only supported for profile-backed `gen --out`",
+            ));
+        }
+
+        if metadata_out.is_some() {
+            return Err(CorpusForgeError::invalid_argument(
+                "`--metadata-out` is only supported for profile-backed `gen`",
+            ));
+        }
+
+        if determinism_set {
+            return Err(CorpusForgeError::invalid_argument(
+                "`--determinism` is only supported for profile-backed `gen`",
+            ));
+        }
+
+        let mode = unicode_mode.ok_or_else(|| {
+            CorpusForgeError::invalid_argument("missing required option `--unicode` for `gen`")
+        })?;
+        let output_kind = output_kind.ok_or_else(|| {
+            CorpusForgeError::invalid_argument("missing required option `--output-kind` for `gen`")
+        })?;
+        let case_count = case_count.ok_or_else(|| {
+            CorpusForgeError::invalid_argument("missing required option `--cases` for `gen`")
+        })?;
+        let seed_source = seed_source.ok_or_else(|| {
+            CorpusForgeError::invalid_argument(
+                "missing required seed source for `gen`; use exactly one of `--seed` or `--seed-file`",
+            )
+        })?;
+
+        TokenizerCaseSpec::new(mode, output_kind, case_count)?;
+
+        return Ok(GenOptions::Unicode(UnicodeGenOptions {
+            mode,
+            output_kind,
+            case_count,
+            seed_source,
+            out,
+            quiet,
+        }));
+    }
+
     if json && out.is_none() {
         return Err(CorpusForgeError::invalid_argument(
             "`--json` requires `--out` for `gen` because standard output carries generated binary bytes",
@@ -523,7 +630,7 @@ fn parse_gen_options(args: &[OsString]) -> Result<GenOptions> {
         CorpusForgeError::invalid_argument("missing required option `--bytes` for `gen`")
     })?;
 
-    Ok(GenOptions {
+    Ok(GenOptions::Profile(ProfileGenOptions {
         profile,
         seed_source,
         byte_count,
@@ -532,7 +639,7 @@ fn parse_gen_options(args: &[OsString]) -> Result<GenOptions> {
         determinism,
         quiet,
         json,
-    })
+    }))
 }
 
 fn seed_source_name(seed_source: &Option<SeedSource>) -> Option<&'static str> {
@@ -593,6 +700,16 @@ fn execute_command(
 }
 
 fn execute_gen(options: GenOptions, stdout: &mut impl std::io::Write) -> Result<Option<String>> {
+    match options {
+        GenOptions::Profile(options) => execute_profile_gen(options, stdout),
+        GenOptions::Unicode(options) => execute_unicode_gen(options, stdout),
+    }
+}
+
+fn execute_profile_gen(
+    options: ProfileGenOptions,
+    stdout: &mut impl std::io::Write,
+) -> Result<Option<String>> {
     let seed = read_seed(&options.seed_source)?;
     let profile_bytes = fs::read(&options.profile)?;
     let pack = ProfilePack::from_bytes(&profile_bytes)?;
@@ -626,6 +743,47 @@ fn execute_gen(options: GenOptions, stdout: &mut impl std::io::Write) -> Result<
     Ok(Some(format_gen_summary(&options, &seed, &profile_hash)))
 }
 
+fn execute_unicode_gen(
+    options: UnicodeGenOptions,
+    stdout: &mut impl std::io::Write,
+) -> Result<Option<String>> {
+    let seed = read_seed(&options.seed_source)?;
+    let spec = TokenizerCaseSpec::new(options.mode, options.output_kind, options.case_count)?;
+    let cases = generate_tokenizer_cases(&seed, spec)?;
+    let bytes = join_tokenizer_cases(&cases);
+
+    if let Some(out) = &options.out {
+        let mut file = File::create(out)?;
+        file.write_all(&bytes)?;
+        file.flush()?;
+    } else {
+        stdout.write_all(&bytes)?;
+    }
+
+    if options.out.is_none() || options.quiet {
+        return Ok(None);
+    }
+
+    Ok(Some(format_unicode_gen_summary(
+        &options,
+        &seed,
+        bytes.len(),
+    )))
+}
+
+fn join_tokenizer_cases(cases: &[corpusforge_tokenizer::TokenizerCase]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+
+    for (index, case) in cases.iter().enumerate() {
+        if index > 0 {
+            bytes.push(b'\n');
+        }
+        bytes.extend_from_slice(case.bytes());
+    }
+
+    bytes
+}
+
 fn read_seed(seed_source: &SeedSource) -> Result<MasterSeed> {
     match seed_source {
         SeedSource::Inline(text) => MasterSeed::from_str(text),
@@ -633,7 +791,11 @@ fn read_seed(seed_source: &SeedSource) -> Result<MasterSeed> {
     }
 }
 
-fn format_gen_summary(options: &GenOptions, seed: &MasterSeed, profile_hash: &str) -> String {
+fn format_gen_summary(
+    options: &ProfileGenOptions,
+    seed: &MasterSeed,
+    profile_hash: &str,
+) -> String {
     let out = options
         .out
         .as_ref()
@@ -660,7 +822,30 @@ fn format_gen_summary(options: &GenOptions, seed: &MasterSeed, profile_hash: &st
     )
 }
 
-fn format_gen_metadata(options: &GenOptions, seed: &MasterSeed, profile_hash: &str) -> String {
+fn format_unicode_gen_summary(
+    options: &UnicodeGenOptions,
+    seed: &MasterSeed,
+    byte_count: usize,
+) -> String {
+    let out = options
+        .out
+        .as_ref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "stdout".to_owned());
+
+    format!(
+        "generated unicode corpus\nseed: {seed}\nunicode_mode: {mode}\noutput_kind: {output_kind}\ncase_count: {case_count}\nbyte_count: {byte_count}\nout: {out}",
+        mode = options.mode,
+        output_kind = options.output_kind,
+        case_count = options.case_count
+    )
+}
+
+fn format_gen_metadata(
+    options: &ProfileGenOptions,
+    seed: &MasterSeed,
+    profile_hash: &str,
+) -> String {
     let output_mode = if options.out.is_some() {
         "file"
     } else {
@@ -1018,6 +1203,28 @@ fn parse_byte_size(value: &str) -> Result<u64> {
     Ok(bytes)
 }
 
+fn parse_case_count(value: &str) -> Result<usize> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(CorpusForgeError::invalid_argument(format!(
+            "invalid case count `{value}`; expected a positive integer"
+        )));
+    }
+
+    let parsed = value.parse::<usize>().map_err(|_| {
+        CorpusForgeError::invalid_argument(format!(
+            "invalid case count `{value}`; expected a positive integer"
+        ))
+    })?;
+
+    if parsed == 0 {
+        return Err(CorpusForgeError::invalid_argument(
+            "case count must be greater than zero",
+        ));
+    }
+
+    Ok(parsed)
+}
+
 fn strip_ascii_suffix<'a>(value: &'a str, suffix: &str) -> Option<&'a str> {
     value
         .get(value.len().checked_sub(suffix.len())?..)
@@ -1065,7 +1272,7 @@ fn command_help(command: &CommandSpec) -> String {
 
 fn gen_help(command: &CommandSpec) -> String {
     format!(
-        "corpusforge {name}\n\n{summary}\n\nUSAGE:\n    corpusforge gen --profile <path> (--seed <seed> | --seed-file <path>) --bytes <N> [OPTIONS]\n\nOPTIONS:\n    --profile <path>              Read a CorpusForge .cff profile with an embedded n-gram model\n    --seed <seed>                 Use an inline deterministic seed\n    --seed-file <path>            Read the deterministic seed from a 32-byte file\n    --bytes <N>                   Set output size in bytes; supports KB, MB, GB\n    --out <path>                  Stream generated bytes to a file instead of stdout\n    --determinism <mode>          Determinism mode: strict or relaxed\n    --metadata-out <path>         Write stable generation metadata JSON to a path\n    --quiet                       Suppress human-readable output when --out is used\n    --json                        Emit JSON summary when --out is used\n    -h, --help                    Print help\n\nSTDOUT:\n    Without --out, generated binary bytes are written directly to stdout. Use --out before --json.",
+        "corpusforge {name}\n\n{summary}\n\nUSAGE:\n    corpusforge gen --profile <path> (--seed <seed> | --seed-file <path>) --bytes <N> [OPTIONS]\n    corpusforge gen --unicode <mode> --output-kind <valid-text|raw-bytes> --cases <N> (--seed <seed> | --seed-file <path>) [--out <path>] [--quiet]\n\nOPTIONS:\n    --profile <path>              Read a CorpusForge .cff profile with an embedded n-gram model\n    --unicode <mode>              Generate built-in tokenizer Unicode stress cases\n    --output-kind <kind>          Unicode output boundary: valid-text or raw-bytes\n    --cases <N>                   Number of Unicode tokenizer cases to generate\n    --seed <seed>                 Use an inline deterministic seed\n    --seed-file <path>            Read the deterministic seed from a 32-byte file\n    --bytes <N>                   Set profile-backed output size in bytes; supports KB, MB, GB\n    --out <path>                  Stream generated bytes to a file instead of stdout\n    --determinism <mode>          Profile-backed determinism mode: strict or relaxed\n    --metadata-out <path>         Write profile-backed stable generation metadata JSON to a path\n    --quiet                       Suppress human-readable output when --out is used\n    --json                        Emit profile-backed JSON summary when --out is used\n    -h, --help                    Print help\n\nUNICODE MODES:\n    grapheme, bidi, zero-width, emoji, normalization, mixed, invalid-utf8\n\nSTDOUT:\n    Without --out, generated binary bytes are written directly to stdout without an added trailing newline. Use --out before --json.",
         name = command.name,
         summary = command.summary
     )
@@ -1158,6 +1365,10 @@ mod tests {
                 assert!(help.contains("--json"));
                 if command == "gen" {
                     assert!(help.contains("generated binary bytes"));
+                    assert!(help.contains("--unicode <mode>"));
+                    assert!(help.contains("--output-kind <kind>"));
+                    assert!(help.contains("--cases <N>"));
+                    assert!(help.contains("invalid-utf8"));
                     assert!(!help.contains("Planned for a later milestone"));
                 } else {
                     assert!(help.contains("EXAMPLES"));
@@ -1183,6 +1394,7 @@ mod tests {
 
         assert!(help.contains("corpusforge gen"));
         assert!(help.contains("--bytes <N>"));
+        assert!(help.contains("--unicode <mode>"));
         assert!(help.contains("generated binary bytes"));
         assert!(!help.contains("Planned for a later milestone"));
     }
@@ -1288,6 +1500,175 @@ mod tests {
     }
 
     #[test]
+    fn gen_unicode_requires_seed_output_kind_and_cases() {
+        let cases = [
+            (
+                &["corpusforge", "gen", "--unicode", "mixed", "--cases", "12"][..],
+                "missing required option `--output-kind`",
+            ),
+            (
+                &[
+                    "corpusforge",
+                    "gen",
+                    "--unicode",
+                    "mixed",
+                    "--output-kind",
+                    "valid-text",
+                ][..],
+                "missing required option `--cases`",
+            ),
+            (
+                &[
+                    "corpusforge",
+                    "gen",
+                    "--unicode",
+                    "mixed",
+                    "--output-kind",
+                    "valid-text",
+                    "--cases",
+                    "12",
+                ][..],
+                "missing required seed source",
+            ),
+        ];
+
+        for (args, expected) in cases {
+            let CliOutcome::Failure(error) = run(args) else {
+                panic!("{args:?} should fail");
+            };
+
+            assert_eq!(error.category(), "invalid_argument");
+            assert!(
+                error.to_string().contains(expected),
+                "{error} should contain {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn gen_unicode_rejects_profile_backed_options() {
+        let cases = [
+            (
+                &[
+                    "corpusforge",
+                    "gen",
+                    "--profile",
+                    "profiles/smoke.cff",
+                    "--unicode",
+                    "mixed",
+                    "--output-kind",
+                    "valid-text",
+                    "--cases",
+                    "12",
+                    "--seed",
+                    "1337",
+                ][..],
+                "cannot be mixed",
+            ),
+            (
+                &[
+                    "corpusforge",
+                    "gen",
+                    "--unicode",
+                    "mixed",
+                    "--output-kind",
+                    "valid-text",
+                    "--cases",
+                    "12",
+                    "--seed",
+                    "1337",
+                    "--json",
+                ][..],
+                "only supported for profile-backed",
+            ),
+            (
+                &[
+                    "corpusforge",
+                    "gen",
+                    "--unicode",
+                    "mixed",
+                    "--output-kind",
+                    "valid-text",
+                    "--cases",
+                    "12",
+                    "--seed",
+                    "1337",
+                    "--metadata-out",
+                    "metadata.json",
+                ][..],
+                "only supported for profile-backed",
+            ),
+        ];
+
+        for (args, expected) in cases {
+            let CliOutcome::Failure(error) = run(args) else {
+                panic!("{args:?} should fail");
+            };
+
+            assert_eq!(error.category(), "invalid_argument");
+            assert!(
+                error.to_string().contains(expected),
+                "{error} should contain {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn gen_unicode_valid_text_stdout_is_deterministic() {
+        let args = [
+            "corpusforge",
+            "gen",
+            "--unicode",
+            "mixed",
+            "--output-kind",
+            "valid-text",
+            "--cases",
+            "12",
+            "--seed",
+            "1337",
+        ];
+        let CliOutcome::SuccessBytes(first) = run(args) else {
+            panic!("unicode generation should write bytes");
+        };
+        let CliOutcome::SuccessBytes(second) = run(args) else {
+            panic!("unicode generation should write bytes");
+        };
+
+        assert_eq!(first, second);
+        assert_eq!(
+            bytes_to_hex(&first),
+            fixture("seed_1337_unicode_valid_text_mixed.hex")
+        );
+        assert!(std::str::from_utf8(&first).is_ok());
+        assert_ne!(first.last(), Some(&b'\n'));
+    }
+
+    #[test]
+    fn gen_unicode_raw_bytes_can_emit_invalid_utf8() {
+        let CliOutcome::SuccessBytes(bytes) = run([
+            "corpusforge",
+            "gen",
+            "--unicode",
+            "invalid-utf8",
+            "--output-kind",
+            "raw-bytes",
+            "--cases",
+            "12",
+            "--seed",
+            "1337",
+        ]) else {
+            panic!("unicode generation should write bytes");
+        };
+
+        assert_eq!(
+            bytes_to_hex(&bytes),
+            fixture("seed_1337_unicode_raw_bytes_invalid_utf8.hex")
+        );
+        assert!(std::str::from_utf8(&bytes).is_err());
+        assert_ne!(bytes.last(), Some(&b'\n'));
+    }
+
+    #[test]
     fn gen_rejects_json_without_out() {
         let CliOutcome::Failure(error) = run([
             "corpusforge",
@@ -1340,6 +1721,34 @@ mod tests {
                 &["corpusforge", "gen", "--bytes", "1.5KB"][..],
                 "invalid byte size",
             ),
+            (
+                &["corpusforge", "gen", "--unicode", "unknown"][..],
+                "unsupported Unicode mode",
+            ),
+            (
+                &[
+                    "corpusforge",
+                    "gen",
+                    "--unicode",
+                    "mixed",
+                    "--output-kind",
+                    "stream",
+                ][..],
+                "unsupported Unicode output kind",
+            ),
+            (
+                &[
+                    "corpusforge",
+                    "gen",
+                    "--unicode",
+                    "mixed",
+                    "--output-kind",
+                    "valid-text",
+                    "--cases",
+                    "0",
+                ][..],
+                "case count must be greater than zero",
+            ),
             (&["corpusforge", "gen", "--profile"][..], "missing value"),
             (
                 &["corpusforge", "gen", "--profile", "--json"][..],
@@ -1368,5 +1777,29 @@ mod tests {
 
         assert_eq!(error.category(), "invalid_profile");
         assert!(error.to_string().contains("unknown command"));
+    }
+
+    fn bytes_to_hex(bytes: &[u8]) -> String {
+        let mut hex = String::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            hex.push_str(&format!("{byte:02x}"));
+        }
+        hex
+    }
+
+    fn fixture(name: &str) -> &'static str {
+        match name {
+            "seed_1337_unicode_valid_text_mixed.hex" => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/golden/seed_1337_unicode_valid_text_mixed.hex"
+            ))
+            .trim(),
+            "seed_1337_unicode_raw_bytes_invalid_utf8.hex" => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/golden/seed_1337_unicode_raw_bytes_invalid_utf8.hex"
+            ))
+            .trim(),
+            _ => panic!("unknown golden fixture '{name}'"),
+        }
     }
 }
