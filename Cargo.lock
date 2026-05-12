@@ -79,6 +79,9 @@ dependencies = [
 [[package]]
 name = "corpusforge-ngram"
 version = "0.1.0"
+dependencies = [
+ "corpusforge-core",
+]
 
 [[package]]
 name = "corpusforge-profile"

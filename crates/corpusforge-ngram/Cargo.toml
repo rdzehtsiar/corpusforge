@@ -7,5 +7,8 @@ license.workspace = true
 authors.workspace = true
 description = "CorpusForge n-gram engine placeholders"
 
+[dependencies]
+corpusforge-core = { path = "../corpusforge-core" }
+
 [lints]
 workspace = true
