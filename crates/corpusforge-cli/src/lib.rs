@@ -3,6 +3,7 @@
 //! Command-line parsing and execution for the CorpusForge binary.
 
 use corpusforge_cff::{InspectSummary, ProfilePack};
+use corpusforge_core::output::ByteRangeWriter;
 use corpusforge_core::seed::MasterSeed;
 use corpusforge_core::{CorpusForgeError, Result};
 use corpusforge_ngram::{ByteBigramModel, ENGINE_NAME, ENGINE_VERSION};
@@ -18,7 +19,7 @@ use corpusforge_tokenizer::{
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 const COMMANDS: [CommandSpec; 6] = [
@@ -76,6 +77,7 @@ enum ParsedCommand {
     ExecutePlaceholder(&'static CommandSpec),
     ExecuteCiTokenizer(CiTokenizerOptions),
     ExecuteGen(GenOptions),
+    ExecuteReplay(ReplayOptions),
     ExecuteShrink(ShrinkOptions),
     ExecuteProfile(ProfileCommand),
     ExecuteVerifyAlias(ProfileFileOptions),
@@ -133,6 +135,29 @@ struct UnicodeGenOptions {
     seed_source: SeedSource,
     out: Option<PathBuf>,
     quiet: bool,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct ReplayOptions {
+    profile: PathBuf,
+    seed_source: SeedSource,
+    range: ByteRange,
+    out: Option<PathBuf>,
+    metadata_out: Option<PathBuf>,
+    quiet: bool,
+    json: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ByteRange {
+    start: u64,
+    end: u64,
+}
+
+impl ByteRange {
+    const fn byte_count(self) -> u64 {
+        self.end - self.start
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -284,6 +309,8 @@ where
                 parse_profile_command(&remaining).map(ParsedCommand::ExecuteProfile)
             } else if command.name == "gen" {
                 parse_gen_options(&remaining).map(ParsedCommand::ExecuteGen)
+            } else if command.name == "replay" {
+                parse_replay_options(&remaining).map(ParsedCommand::ExecuteReplay)
             } else if command.name == "verify" && contains_profile_option(&remaining) {
                 parse_profile_file_options("verify", &remaining)
                     .map(ParsedCommand::ExecuteVerifyAlias)
@@ -659,6 +686,141 @@ fn finish_profile_gen_options(state: GenOptionState) -> Result<GenOptions> {
         quiet: state.quiet,
         json: state.json,
     }))
+}
+
+fn parse_replay_options(args: &[OsString]) -> Result<ReplayOptions> {
+    let command = find_command("replay").expect("replay command should exist");
+    let mut state = ReplayOptionState::default();
+    let mut index = 0;
+
+    while index < args.len() {
+        let flag = args[index].to_string_lossy();
+        index += parse_replay_option(command, args, index, flag.as_ref(), &mut state)?;
+    }
+
+    finish_replay_options(state)
+}
+
+#[derive(Default)]
+struct ReplayOptionState {
+    profile: Option<PathBuf>,
+    seed_source: Option<SeedSource>,
+    range: Option<ByteRange>,
+    out: Option<PathBuf>,
+    metadata_out: Option<PathBuf>,
+    quiet: bool,
+    json: bool,
+}
+
+fn parse_replay_option(
+    command: &CommandSpec,
+    args: &[OsString],
+    index: usize,
+    flag: &str,
+    state: &mut ReplayOptionState,
+) -> Result<usize> {
+    match flag {
+        "--profile" => {
+            state.profile = Some(take_unique_path(
+                &state.profile,
+                "replay",
+                args,
+                index,
+                flag,
+            )?)
+        }
+        "--seed" => {
+            state.seed_source = Some(take_inline_seed(
+                command,
+                args,
+                index,
+                flag,
+                &state.seed_source,
+            )?)
+        }
+        "--seed-file" => {
+            state.seed_source = Some(take_file_seed(
+                "replay",
+                args,
+                index,
+                flag,
+                &state.seed_source,
+            )?)
+        }
+        "--range" => state.range = Some(take_replay_range(command, args, index, &state.range)?),
+        "--out" => state.out = Some(take_unique_path(&state.out, "replay", args, index, flag)?),
+        "--metadata-out" => {
+            state.metadata_out = Some(take_unique_path(
+                &state.metadata_out,
+                "replay",
+                args,
+                index,
+                flag,
+            )?)
+        }
+        "--quiet" => {
+            claim_switch(&mut state.quiet, flag)?;
+            return Ok(1);
+        }
+        "--json" => {
+            claim_switch(&mut state.json, flag)?;
+            return Ok(1);
+        }
+        "-h" | "--help" => {
+            return Err(CorpusForgeError::invalid_argument(
+                "help must be requested without other arguments; run `corpusforge replay --help`",
+            ))
+        }
+        other if other.starts_with('-') => {
+            return Err(CorpusForgeError::invalid_argument(format!(
+                "unknown option `{other}` for `replay`; run `corpusforge replay --help`"
+            )));
+        }
+        other => {
+            return Err(CorpusForgeError::invalid_argument(format!(
+                "unexpected argument `{other}` for `replay`; run `corpusforge replay --help`"
+            )));
+        }
+    }
+
+    Ok(2)
+}
+
+fn take_replay_range(
+    command: &CommandSpec,
+    args: &[OsString],
+    index: usize,
+    current: &Option<ByteRange>,
+) -> Result<ByteRange> {
+    reject_duplicate(current, "--range")?;
+    let value = take_value(command, args, index, "--range")?;
+    parse_byte_range(&value)
+}
+
+fn finish_replay_options(state: ReplayOptionState) -> Result<ReplayOptions> {
+    if state.json && state.out.is_none() {
+        return Err(CorpusForgeError::invalid_argument(
+            "`--json` requires `--out` for `replay` because standard output carries replayed binary bytes",
+        ));
+    }
+
+    let profile = state.profile.ok_or_else(|| {
+        CorpusForgeError::invalid_argument("missing required option `--profile` for `replay`")
+    })?;
+    let seed_source = require_seed_source(state.seed_source, "replay")?;
+    let range = state.range.ok_or_else(|| {
+        CorpusForgeError::invalid_argument("missing required option `--range` for `replay`")
+    })?;
+
+    Ok(ReplayOptions {
+        profile,
+        seed_source,
+        range,
+        out: state.out,
+        metadata_out: state.metadata_out,
+        quiet: state.quiet,
+        json: state.json,
+    })
 }
 
 fn parse_ci_tokenizer_options(args: &[OsString]) -> Result<CiTokenizerOptions> {
@@ -1195,6 +1357,7 @@ fn execute_command(command: ParsedCommand, stdout: &mut impl Write) -> Result<Op
         )),
         ParsedCommand::ExecuteCiTokenizer(options) => execute_ci_tokenizer(options).map(Some),
         ParsedCommand::ExecuteGen(options) => execute_gen(options, stdout),
+        ParsedCommand::ExecuteReplay(options) => execute_replay(options, stdout),
         ParsedCommand::ExecuteShrink(options) => execute_shrink(options).map(Some),
         ParsedCommand::ExecuteProfile(command) => execute_profile_command(command).map(Some),
         ParsedCommand::ExecuteVerifyAlias(options) => execute_profile_verify(options).map(Some),
@@ -1247,15 +1410,10 @@ fn execute_profile_gen(
     stdout: &mut impl Write,
 ) -> Result<Option<String>> {
     let seed = read_seed(&options.seed_source)?;
-    let profile_bytes = fs::read(&options.profile)?;
-    let pack = ProfilePack::from_bytes(&profile_bytes)?;
-    let profile_hash = pack.profile_hash();
-    let model_bytes = pack.ngram_model_bytes().ok_or_else(|| {
-        CorpusForgeError::invalid_profile(
-            "profile lacks required NGRAMV0\\0 n-gram model section; rebuild it with `corpusforge profile build <input> --out <path>`",
-        )
-    })?;
-    let model = ByteBigramModel::from_bytes(model_bytes)?;
+    let LoadedProfileModel {
+        profile_hash,
+        model,
+    } = load_profile_model(&options.profile)?;
 
     if let Some(out) = &options.out {
         let mut file = File::create(out)?;
@@ -1277,6 +1435,65 @@ fn execute_profile_gen(
     }
 
     Ok(Some(format_gen_summary(&options, &seed, &profile_hash)))
+}
+
+fn execute_replay(options: ReplayOptions, stdout: &mut impl Write) -> Result<Option<String>> {
+    let seed = read_seed(&options.seed_source)?;
+    let LoadedProfileModel {
+        profile_hash,
+        model,
+    } = load_profile_model(&options.profile)?;
+    let replay_end = usize::try_from(options.range.end).map_err(|_| {
+        CorpusForgeError::invalid_argument(
+            "`--range` end exceeds this platform's supported replay byte count",
+        )
+    })?;
+
+    if let Some(out) = &options.out {
+        let file = File::create(out)?;
+        let mut range_writer = ByteRangeWriter::new(file, options.range.start, options.range.end);
+        model.generate_bytes(&seed, replay_end, &mut range_writer)?;
+        range_writer.flush()?;
+    } else {
+        let mut range_writer = ByteRangeWriter::new(stdout, options.range.start, options.range.end);
+        model.generate_bytes(&seed, replay_end, &mut range_writer)?;
+        range_writer.flush()?;
+    }
+
+    if let Some(metadata_out) = &options.metadata_out {
+        fs::write(
+            metadata_out,
+            format_replay_metadata(&options, &seed, &profile_hash),
+        )?;
+    }
+
+    if options.out.is_none() || options.quiet {
+        return Ok(None);
+    }
+
+    Ok(Some(format_replay_summary(&options, &seed, &profile_hash)))
+}
+
+struct LoadedProfileModel {
+    profile_hash: String,
+    model: ByteBigramModel,
+}
+
+fn load_profile_model(profile: &Path) -> Result<LoadedProfileModel> {
+    let profile_bytes = fs::read(profile)?;
+    let pack = ProfilePack::from_bytes(&profile_bytes)?;
+    let profile_hash = pack.profile_hash();
+    let model_bytes = pack.ngram_model_bytes().ok_or_else(|| {
+        CorpusForgeError::invalid_profile(
+            "profile lacks required NGRAMV0\\0 n-gram model section; rebuild it with `corpusforge profile build <input> --out <path>`",
+        )
+    })?;
+    let model = ByteBigramModel::from_bytes(model_bytes)?;
+
+    Ok(LoadedProfileModel {
+        profile_hash,
+        model,
+    })
 }
 
 fn execute_unicode_gen(
@@ -1382,6 +1599,37 @@ fn format_gen_summary(
     )
 }
 
+fn format_replay_summary(options: &ReplayOptions, seed: &MasterSeed, profile_hash: &str) -> String {
+    let out = options
+        .out
+        .as_ref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "stdout".to_owned());
+
+    if options.json {
+        return format!(
+            "{{\"command\":\"replay\",\"seed\":\"{}\",\"profile_hash\":\"{}\",\"engine_name\":\"{}\",\"engine_version\":{},\"range_start\":{},\"range_end\":{},\"byte_count\":{},\"out\":\"{}\"}}",
+            seed,
+            json_escape(profile_hash),
+            json_escape(ENGINE_NAME),
+            ENGINE_VERSION,
+            options.range.start,
+            options.range.end,
+            options.range.byte_count(),
+            json_escape(&out)
+        );
+    }
+
+    format!(
+        "replayed corpus range\nprofile_hash: {profile_hash}\nseed: {seed}\nengine: {engine_name}/{engine_version}\nrange_start: {range_start}\nrange_end: {range_end}\nbyte_count: {byte_count}\nout: {out}",
+        engine_name = ENGINE_NAME,
+        engine_version = ENGINE_VERSION,
+        range_start = options.range.start,
+        range_end = options.range.end,
+        byte_count = options.range.byte_count()
+    )
+}
+
 fn format_unicode_gen_summary(
     options: &UnicodeGenOptions,
     seed: &MasterSeed,
@@ -1477,6 +1725,33 @@ fn format_gen_metadata(
         output_mode,
         options.json,
         options.quiet
+    )
+}
+
+fn format_replay_metadata(
+    options: &ReplayOptions,
+    seed: &MasterSeed,
+    profile_hash: &str,
+) -> String {
+    let output_mode = if options.out.is_some() {
+        "file"
+    } else {
+        "stdout"
+    };
+
+    format!(
+        "{{\"tool_version\":\"{}\",\"command\":\"replay\",\"seed\":\"{}\",\"profile_hash\":\"{}\",\"engine_name\":\"{}\",\"engine_version\":{},\"range_start\":{},\"range_end\":{},\"byte_count\":{},\"output_mode\":\"{}\",\"quiet\":{},\"json\":{}}}\n",
+        json_escape(env!("CARGO_PKG_VERSION")),
+        seed,
+        json_escape(profile_hash),
+        json_escape(ENGINE_NAME),
+        ENGINE_VERSION,
+        options.range.start,
+        options.range.end,
+        options.range.byte_count(),
+        output_mode,
+        options.quiet,
+        options.json
     )
 }
 
@@ -1817,6 +2092,45 @@ fn parse_byte_size(value: &str) -> Result<u64> {
     Ok(bytes)
 }
 
+fn parse_byte_range(value: &str) -> Result<ByteRange> {
+    let Some((start, end)) = value.split_once("..") else {
+        return Err(invalid_range(value));
+    };
+
+    if start.contains("..") || end.contains("..") {
+        return Err(invalid_range(value));
+    }
+
+    let start = parse_range_endpoint(value, start, "start")?;
+    let end = parse_range_endpoint(value, end, "end")?;
+
+    if end < start {
+        return Err(CorpusForgeError::invalid_argument(format!(
+            "invalid range `{value}`; range end must be greater than or equal to range start"
+        )));
+    }
+
+    Ok(ByteRange { start, end })
+}
+
+fn parse_range_endpoint(range: &str, endpoint: &str, label: &str) -> Result<u64> {
+    if endpoint.is_empty() || !endpoint.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(invalid_range(range));
+    }
+
+    endpoint.parse::<u64>().map_err(|_| {
+        CorpusForgeError::invalid_argument(format!(
+            "invalid range `{range}`; {label} endpoint is too large"
+        ))
+    })
+}
+
+fn invalid_range(value: &str) -> CorpusForgeError {
+    CorpusForgeError::invalid_argument(format!(
+        "invalid range `{value}`; expected decimal unsigned integers as `start..end`"
+    ))
+}
+
 fn parse_case_count(value: &str) -> Result<usize> {
     if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(CorpusForgeError::invalid_argument(format!(
@@ -1929,6 +2243,10 @@ fn command_help(command: &CommandSpec) -> String {
         return shrink_help(command);
     }
 
+    if command.name == "replay" {
+        return replay_help(command);
+    }
+
     format!(
         "corpusforge {name}\n\n{summary}\n\nUSAGE:\n    corpusforge {name} [OPTIONS]\n\nOPTIONS:\n    --seed <seed>                 Use an inline deterministic seed\n    --seed-file <path>            Read the deterministic seed from a file\n    --profile <path>              Read a CorpusForge profile path\n    --out <path>                  Write generated output to a path\n    --bytes <N>                   Set output size in bytes; supports KB, MB, GB\n    --determinism <mode>          Determinism mode: strict or relaxed\n    --metadata-out <path>         Write machine-readable metadata to a path\n    --quiet                       Reduce human-readable output\n    --json                        Emit machine-readable JSON where supported\n    -h, --help                    Print help\n\nEXAMPLES:\n    corpusforge {name} --seed 42 --profile profiles/smoke.cff --bytes 64KB\n    corpusforge {name} --seed-file seed.txt --determinism strict --metadata-out report.json --json\n\nSTATUS:\n    Planned for a later milestone; execution currently returns NotImplemented.",
         name = command.name,
@@ -1955,6 +2273,14 @@ fn ci_help(command: &CommandSpec) -> String {
 fn gen_help(command: &CommandSpec) -> String {
     format!(
         "corpusforge {name}\n\n{summary}\n\nUSAGE:\n    corpusforge gen --profile <path> (--seed <seed> | --seed-file <path>) --bytes <N> [OPTIONS]\n    corpusforge gen --unicode <mode> --output-kind <valid-text|raw-bytes> --cases <N> (--seed <seed> | --seed-file <path>) [--out <path>] [--quiet]\n\nOPTIONS:\n    --profile <path>              Read a CorpusForge .cff profile with an embedded n-gram model\n    --unicode <mode>              Generate built-in tokenizer Unicode stress cases\n    --output-kind <kind>          Unicode output boundary: valid-text or raw-bytes\n    --cases <N>                   Number of Unicode tokenizer cases to generate\n    --seed <seed>                 Use an inline deterministic seed\n    --seed-file <path>            Read the deterministic seed from a 32-byte file\n    --bytes <N>                   Set profile-backed output size in bytes; supports KB, MB, GB\n    --out <path>                  Stream generated bytes to a file instead of stdout\n    --determinism <mode>          Profile-backed determinism mode: strict or relaxed\n    --metadata-out <path>         Write profile-backed stable generation metadata JSON to a path\n    --quiet                       Suppress human-readable output when --out is used\n    --json                        Emit profile-backed JSON summary when --out is used\n    -h, --help                    Print help\n\nUNICODE MODES:\n    grapheme, bidi, zero-width, emoji, normalization, mixed, invalid-utf8\n\nSTDOUT:\n    Without --out, generated binary bytes are written directly to stdout without an added trailing newline. Use --out before --json.",
+        name = command.name,
+        summary = command.summary
+    )
+}
+
+fn replay_help(command: &CommandSpec) -> String {
+    format!(
+        "corpusforge {name}\n\n{summary}\n\nUSAGE:\n    corpusforge replay --profile <path> (--seed <seed> | --seed-file <path>) --range <start>..<end> [--out <path>] [--metadata-out <path>] [--quiet] [--json]\n\nOPTIONS:\n    --profile <path>              Read a CorpusForge .cff profile with an embedded n-gram model\n    --seed <seed>                 Use an inline deterministic seed\n    --seed-file <path>            Read the deterministic seed from a 32-byte file\n    --range <start>..<end>        Replay the half-open byte range; empty ranges are allowed\n    --out <path>                  Stream replayed bytes to a file instead of stdout\n    --metadata-out <path>         Write stable replay metadata JSON to a path\n    --quiet                       Suppress stdout summary when --out is used\n    --json                        Emit replay JSON summary when --out is used\n    -h, --help                    Print help\n\nSTDOUT:\n    Without --out, replayed binary bytes are written directly to stdout without an added trailing newline. Use --out before --json.",
         name = command.name,
         summary = command.summary
     )
@@ -2062,6 +2388,18 @@ mod tests {
                 assert!(help.contains("--json"));
                 assert!(help.contains("reads candidate bytes from stdin"));
                 assert!(!help.contains("Planned for a later milestone"));
+            } else if command == "replay" {
+                assert!(help.contains("--seed <seed>"));
+                assert!(help.contains("--seed-file <path>"));
+                assert!(help.contains("--range <start>..<end>"));
+                assert!(help.contains("--out <path>"));
+                assert!(help.contains("--metadata-out <path>"));
+                assert!(help.contains("--quiet"));
+                assert!(help.contains("--json"));
+                assert!(help.contains("replayed binary bytes"));
+                assert!(!help.contains("--bytes <N>"));
+                assert!(!help.contains("--determinism <mode>"));
+                assert!(!help.contains("Planned for a later milestone"));
             } else {
                 assert!(help.contains("--seed <seed>"));
                 assert!(help.contains("--seed-file <path>"));
@@ -2108,40 +2446,165 @@ mod tests {
     }
 
     #[test]
-    fn replay_placeholder_command_returns_not_implemented() {
-        let CliOutcome::Failure(error) = run(["corpusforge", "replay"]) else {
-            panic!("placeholder execution should fail");
-        };
+    fn replay_requires_profile_seed_and_range() {
+        let cases = [
+            (
+                &["corpusforge", "replay", "--seed", "42", "--range", "0..8"][..],
+                "missing required option `--profile`",
+            ),
+            (
+                &[
+                    "corpusforge",
+                    "replay",
+                    "--profile",
+                    "profiles/smoke.cff",
+                    "--range",
+                    "0..8",
+                ][..],
+                "missing required seed source",
+            ),
+            (
+                &[
+                    "corpusforge",
+                    "replay",
+                    "--profile",
+                    "profiles/smoke.cff",
+                    "--seed",
+                    "42",
+                ][..],
+                "missing required option `--range`",
+            ),
+        ];
 
-        assert_eq!(error.category(), "not_implemented");
-        assert!(error.to_string().contains("replay command execution"));
+        assert_invalid_argument_cases(&cases);
     }
 
     #[test]
-    fn common_options_parse_before_placeholder_execution() {
+    fn replay_rejects_duplicate_and_conflicting_flags() {
+        let cases = [
+            (
+                &[
+                    "corpusforge",
+                    "replay",
+                    "--profile",
+                    "a.cff",
+                    "--profile",
+                    "b.cff",
+                ][..],
+                "duplicate option `--profile`",
+            ),
+            (
+                &[
+                    "corpusforge",
+                    "replay",
+                    "--range",
+                    "0..1",
+                    "--range",
+                    "1..2",
+                ][..],
+                "duplicate option `--range`",
+            ),
+            (
+                &[
+                    "corpusforge",
+                    "replay",
+                    "--seed",
+                    "1",
+                    "--seed-file",
+                    "seed.txt",
+                ][..],
+                "conflicts",
+            ),
+            (
+                &["corpusforge", "replay", "--quiet", "--quiet"][..],
+                "duplicate option `--quiet`",
+            ),
+            (
+                &["corpusforge", "replay", "--json", "--json"][..],
+                "duplicate option `--json`",
+            ),
+        ];
+
+        assert_invalid_argument_cases(&cases);
+    }
+
+    #[test]
+    fn replay_rejects_invalid_ranges() {
+        let cases = [
+            (
+                &["corpusforge", "replay", "--range", "0"][..],
+                "invalid range",
+            ),
+            (
+                &["corpusforge", "replay", "--range", "..1"][..],
+                "invalid range",
+            ),
+            (
+                &["corpusforge", "replay", "--range", "1.."][..],
+                "invalid range",
+            ),
+            (
+                &["corpusforge", "replay", "--range", "a..1"][..],
+                "invalid range",
+            ),
+            (
+                &["corpusforge", "replay", "--range", "2..1"][..],
+                "range end must be greater than or equal",
+            ),
+        ];
+
+        assert_invalid_argument_cases(&cases);
+    }
+
+    #[test]
+    fn replay_rejects_json_without_out() {
+        let CliOutcome::Failure(error) = run(["corpusforge", "replay"]) else {
+            panic!("missing options should fail");
+        };
+
+        assert_eq!(error.category(), "invalid_argument");
+        assert!(error
+            .to_string()
+            .contains("missing required option `--profile`"));
+
         let CliOutcome::Failure(error) = run([
             "corpusforge",
             "replay",
-            "--seed",
-            "42",
             "--profile",
             "profiles/smoke.cff",
-            "--out",
-            "out.txt",
-            "--bytes",
-            "64KB",
-            "--determinism",
-            "strict",
-            "--metadata-out",
-            "report.json",
-            "--quiet",
+            "--seed",
+            "42",
+            "--range",
+            "0..8",
             "--json",
         ]) else {
-            panic!("placeholder execution should fail");
+            panic!("json without out should fail");
         };
 
-        assert_eq!(error.category(), "not_implemented");
-        assert!(error.to_string().contains("replay command execution"));
+        assert_eq!(error.category(), "invalid_argument");
+        assert!(error
+            .to_string()
+            .contains("standard output carries replayed binary bytes"));
+    }
+
+    #[test]
+    fn replay_rejects_placeholder_only_flags() {
+        let cases = [
+            (
+                &["corpusforge", "replay", "--bytes", "64KB"][..],
+                "unknown option `--bytes`",
+            ),
+            (
+                &["corpusforge", "replay", "--determinism", "strict"][..],
+                "unknown option `--determinism`",
+            ),
+            (
+                &["corpusforge", "replay", "--unknown"][..],
+                "unknown option",
+            ),
+        ];
+
+        assert_invalid_argument_cases(&cases);
     }
 
     #[test]
@@ -2584,25 +3047,6 @@ mod tests {
         assert!(json.contains("\"exit_code\":101"));
 
         let _ = std::fs::remove_file(report);
-    }
-
-    #[test]
-    fn seed_file_option_parse_before_placeholder_execution() {
-        let CliOutcome::Failure(error) = run([
-            "corpusforge",
-            "replay",
-            "--seed-file",
-            "seed.txt",
-            "--bytes",
-            "1GB",
-            "--determinism",
-            "relaxed",
-        ]) else {
-            panic!("placeholder execution should fail");
-        };
-
-        assert_eq!(error.category(), "not_implemented");
-        assert!(error.to_string().contains("replay command execution"));
     }
 
     #[test]

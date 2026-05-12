@@ -122,9 +122,104 @@ impl<W: Write> Write for ExactByteLimitWriter<W> {
     }
 }
 
+/// A `Write` wrapper that forwards only bytes in `[range_start, range_end)`.
+#[derive(Debug)]
+pub struct ByteRangeWriter<W> {
+    inner: W,
+    range_start: u64,
+    range_end: u64,
+    position: u64,
+    bytes_written: u64,
+}
+
+impl<W> ByteRangeWriter<W> {
+    /// Wraps an inner writer and forwards only bytes in `[range_start, range_end)`.
+    ///
+    /// Bytes before `range_start` and at or after `range_end` are consumed and discarded.
+    pub const fn new(inner: W, range_start: u64, range_end: u64) -> Self {
+        Self {
+            inner,
+            range_start,
+            range_end,
+            position: 0,
+            bytes_written: 0,
+        }
+    }
+
+    /// Returns the inclusive start of the forwarded range.
+    pub const fn range_start(&self) -> u64 {
+        self.range_start
+    }
+
+    /// Returns the exclusive end of the forwarded range.
+    pub const fn range_end(&self) -> u64 {
+        self.range_end
+    }
+
+    /// Returns the total input byte position consumed by this writer.
+    pub const fn position(&self) -> u64 {
+        self.position
+    }
+
+    /// Returns the number of bytes successfully written to the inner writer.
+    pub const fn bytes_written(&self) -> u64 {
+        self.bytes_written
+    }
+
+    /// Returns a shared reference to the inner writer.
+    pub const fn get_ref(&self) -> &W {
+        &self.inner
+    }
+
+    /// Returns a mutable reference to the inner writer.
+    pub fn get_mut(&mut self) -> &mut W {
+        &mut self.inner
+    }
+
+    /// Unwraps the writer and returns the inner writer.
+    pub fn into_inner(self) -> W {
+        self.inner
+    }
+}
+
+impl<W: Write> Write for ByteRangeWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let input_len = u64::try_from(buf.len()).unwrap_or(u64::MAX);
+        let input_end = self.position.saturating_add(input_len);
+
+        if input_end <= self.range_start || self.position >= self.range_end {
+            self.position = input_end;
+            return Ok(buf.len());
+        }
+
+        let write_start = self
+            .range_start
+            .saturating_sub(self.position)
+            .min(input_len) as usize;
+        let write_end = self.range_end.saturating_sub(self.position).min(input_len) as usize;
+
+        if write_start >= write_end {
+            self.position = input_end;
+            return Ok(buf.len());
+        }
+
+        let written = self.inner.write(&buf[write_start..write_end])?;
+        self.position = self
+            .position
+            .saturating_add(u64::try_from(write_start.saturating_add(written)).unwrap_or(u64::MAX));
+        self.bytes_written = self.bytes_written.saturating_add(written as u64);
+
+        Ok(write_start.saturating_add(written))
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ByteCountingWriter, ExactByteLimitWriter};
+    use super::{ByteCountingWriter, ByteRangeWriter, ExactByteLimitWriter};
     use std::io::{self, Write};
 
     #[test]
@@ -190,6 +285,65 @@ mod tests {
         assert_eq!(writer.bytes_written(), 2);
         assert_eq!(writer.remaining(), 3);
         assert_eq!(writer.into_inner().bytes, b"ab");
+    }
+
+    #[test]
+    fn byte_range_writer_discards_prefix_before_writing() {
+        let inner = Vec::new();
+        let mut writer = ByteRangeWriter::new(inner, 3, 8);
+
+        writer
+            .write_all(b"abcdefghij")
+            .expect("write should succeed");
+
+        assert_eq!(writer.bytes_written(), 5);
+        assert_eq!(writer.position(), 10);
+        assert_eq!(writer.into_inner(), b"defgh");
+    }
+
+    #[test]
+    fn byte_range_writer_writes_exact_range_across_calls() {
+        let inner = Vec::new();
+        let mut writer = ByteRangeWriter::new(inner, 2, 7);
+
+        writer.write_all(b"ab").expect("prefix should be discarded");
+        writer.write_all(b"cde").expect("middle should be written");
+        writer
+            .write_all(b"fghij")
+            .expect("suffix should be discarded");
+
+        assert_eq!(writer.bytes_written(), 5);
+        assert_eq!(writer.position(), 10);
+        assert_eq!(writer.into_inner(), b"cdefg");
+    }
+
+    #[test]
+    fn byte_range_writer_empty_range_emits_zero_bytes() {
+        let inner = Vec::new();
+        let mut writer = ByteRangeWriter::new(inner, 4, 4);
+
+        writer
+            .write_all(b"abcdef")
+            .expect("empty range should discard");
+
+        assert_eq!(writer.bytes_written(), 0);
+        assert_eq!(writer.position(), 6);
+        assert!(writer.into_inner().is_empty());
+    }
+
+    #[test]
+    fn byte_range_writer_preserves_inner_short_write_behavior() {
+        let inner = ShortWriter::new(2);
+        let mut writer = ByteRangeWriter::new(inner, 3, 8);
+
+        assert_eq!(
+            writer.write(b"abcdefghij").expect("write should succeed"),
+            5
+        );
+
+        assert_eq!(writer.bytes_written(), 2);
+        assert_eq!(writer.position(), 5);
+        assert_eq!(writer.into_inner().bytes, b"de");
     }
 
     struct ShortWriter {

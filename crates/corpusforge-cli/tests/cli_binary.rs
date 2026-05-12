@@ -67,6 +67,18 @@ fn binary_command_help_exits_successfully() {
             assert!(stdout.contains("--json"));
             assert!(stdout.contains("reads candidate bytes from stdin"));
             assert!(!stdout.contains("Planned for a later milestone"));
+        } else if command == "replay" {
+            assert!(stdout.contains("--seed <seed>"));
+            assert!(stdout.contains("--seed-file <path>"));
+            assert!(stdout.contains("--range <start>..<end>"));
+            assert!(stdout.contains("--out <path>"));
+            assert!(stdout.contains("--metadata-out <path>"));
+            assert!(stdout.contains("--quiet"));
+            assert!(stdout.contains("--json"));
+            assert!(stdout.contains("replayed binary bytes"));
+            assert!(!stdout.contains("--bytes <N>"));
+            assert!(!stdout.contains("--determinism <mode>"));
+            assert!(!stdout.contains("Planned for a later milestone"));
         } else {
             assert!(stdout.contains("--seed <seed>"));
             assert!(stdout.contains("--seed-file <path>"));
@@ -107,7 +119,7 @@ fn binary_command_help_with_common_flags_exits_successfully() {
 }
 
 #[test]
-fn binary_replay_placeholder_execution_exits_nonzero() {
+fn binary_replay_rejects_missing_required_args() {
     let output = corpusforge()
         .arg("replay")
         .output()
@@ -115,37 +127,24 @@ fn binary_replay_placeholder_execution_exits_nonzero() {
 
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
-    assert!(stderr.contains("error: not implemented"));
-    assert!(stderr.contains("replay command execution"));
+    assert!(stderr.contains("error: invalid argument"));
+    assert!(stderr.contains("missing required option `--profile`"));
 }
 
 #[test]
-fn binary_common_flags_parse_before_placeholder_execution() {
-    let output = corpusforge()
-        .args([
-            "replay",
-            "--seed",
-            "42",
-            "--profile",
-            "profiles/smoke.cff",
-            "--out",
-            "out.txt",
-            "--bytes",
-            "64KB",
-            "--determinism",
-            "strict",
-            "--metadata-out",
-            "report.json",
-            "--quiet",
-            "--json",
-        ])
-        .output()
-        .expect("binary should run");
-
-    assert!(!output.status.success());
-    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
-    assert!(stderr.contains("error: not implemented"));
-    assert!(stderr.contains("replay command execution"));
+fn binary_replay_rejects_placeholder_only_flags() {
+    for (args, expected) in [
+        (
+            &["replay", "--bytes", "64KB"][..],
+            "unknown option `--bytes`",
+        ),
+        (
+            &["replay", "--determinism", "strict"][..],
+            "unknown option `--determinism`",
+        ),
+    ] {
+        assert_invalid_argument(args, expected, expected);
+    }
 }
 
 #[test]
@@ -593,6 +592,75 @@ fn binary_gen_repository_profile_seed_1337_matches_golden_hex() {
         fixture("seed_1337_repository_fixtures_ngram.hex")
     );
     assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn binary_replay_stdout_matches_generated_byte_slice() {
+    let temp = TestDir::new("replay-slice");
+    let profile = build_repository_profile(&temp);
+    let start = 7_usize;
+    let end = 39_usize;
+    let end_text = end.to_string();
+    let range_text = format!("{start}..{end}");
+
+    let generated = corpusforge()
+        .args(["gen", "--profile"])
+        .arg(&profile)
+        .args(["--seed", "1337", "--bytes", &end_text])
+        .output()
+        .expect("binary should run");
+    assert!(generated.status.success());
+    assert_eq!(generated.stdout.len(), end);
+
+    let replayed = corpusforge()
+        .args(["replay", "--profile"])
+        .arg(&profile)
+        .args(["--seed", "1337", "--range", &range_text])
+        .output()
+        .expect("binary should run");
+
+    assert!(replayed.status.success());
+    assert!(replayed.stderr.is_empty());
+    assert_eq!(replayed.stdout, generated.stdout[start..end]);
+    assert_ne!(replayed.stdout.last(), Some(&b'\n'));
+}
+
+#[test]
+fn binary_replay_metadata_out_writes_stable_json_fields() {
+    let temp = TestDir::new("replay-metadata");
+    let profile = build_repository_profile(&temp);
+    let out = temp.path().join("replayed.bin");
+    let metadata = temp.path().join("metadata.json");
+
+    let output = corpusforge()
+        .args(["replay", "--profile"])
+        .arg(&profile)
+        .args(["--seed", "1337", "--range", "4..12", "--out"])
+        .arg(&out)
+        .args(["--metadata-out"])
+        .arg(&metadata)
+        .arg("--json")
+        .output()
+        .expect("binary should run");
+
+    assert!(output.status.success());
+    assert_eq!(fs::read(&out).expect("replayed file should exist").len(), 8);
+    assert!(output.stderr.is_empty());
+
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    assert!(stdout.starts_with("{\"command\":\"replay\""));
+    assert!(stdout.contains("\"range_start\":4"));
+    assert!(stdout.contains("\"range_end\":12"));
+    assert!(stdout.ends_with('\n'));
+
+    let metadata = fs::read_to_string(&metadata).expect("metadata should be UTF-8");
+    assert_eq!(
+        metadata,
+        format!(
+            "{{\"tool_version\":\"{}\",\"command\":\"replay\",\"seed\":\"096875ea372a1b80bcccb9d8f3f10dde3e0f65e6facc94bf477e3b9531c7aa51\",\"profile_hash\":\"cff:d2fb375e2bda819d4746e0077823653fee6704c314d2c99e40953374add636c6\",\"engine_name\":\"corpusforge.byte_bigram\",\"engine_version\":0,\"range_start\":4,\"range_end\":12,\"byte_count\":8,\"output_mode\":\"file\",\"quiet\":false,\"json\":true}}\n",
+            env!("CARGO_PKG_VERSION")
+        )
+    );
 }
 
 #[test]
