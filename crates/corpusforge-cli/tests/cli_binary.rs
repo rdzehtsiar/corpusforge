@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -302,21 +303,7 @@ fn binary_profile_malformed_and_unsupported_flags_fail_cleanly() {
     ];
 
     for (args, expected) in cases {
-        let output = corpusforge()
-            .args(args)
-            .output()
-            .expect("binary should run");
-
-        assert!(!output.status.success(), "{expected} should fail");
-        let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
-        assert!(
-            stderr.contains("error: invalid argument"),
-            "{stderr} should be an invalid argument"
-        );
-        assert!(
-            stderr.contains(expected),
-            "{stderr} should contain {expected}"
-        );
+        assert_invalid_argument(args, expected, expected);
     }
 }
 
@@ -338,22 +325,30 @@ fn binary_malformed_common_flags_fail_cleanly() {
     ];
 
     for (args, expected) in cases {
-        let output = corpusforge()
-            .args(args)
-            .output()
-            .expect("binary should run");
-
-        assert!(!output.status.success(), "{args:?} should fail");
-        let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
-        assert!(
-            stderr.contains("error: invalid argument"),
-            "{stderr} should be an invalid argument"
-        );
-        assert!(
-            stderr.contains(expected),
-            "{stderr} should contain {expected}"
-        );
+        assert_invalid_argument(args, &format!("{args:?}"), expected);
     }
+}
+
+fn assert_invalid_argument<I, S>(args: I, case: &str, expected: &str)
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let output = corpusforge()
+        .args(args)
+        .output()
+        .expect("binary should run");
+
+    assert!(!output.status.success(), "{case} should fail");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(
+        stderr.contains("error: invalid argument"),
+        "{case} stderr should be an invalid argument: {stderr}"
+    );
+    assert!(
+        stderr.contains(expected),
+        "{case} stderr should contain {expected}: {stderr}"
+    );
 }
 
 fn assert_profile_summary(stdout: &str) {
