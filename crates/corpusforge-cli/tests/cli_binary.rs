@@ -4,6 +4,7 @@ use corpusforge_cff::{ProfileFile, ProfilePack};
 use corpusforge_testkit::bytes_to_hex;
 use std::ffi::{OsStr, OsString};
 use std::fs;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -37,7 +38,9 @@ fn binary_command_help_exits_successfully() {
         assert!(output.status.success(), "{command} help should succeed");
         let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
         assert!(stdout.contains(&format!("corpusforge {command}")));
-        assert!(stdout.contains("--profile <path>"));
+        if command != "shrink" {
+            assert!(stdout.contains("--profile <path>"));
+        }
         if command == "profile" {
             assert!(stdout.contains("build"));
             assert!(stdout.contains("inspect"));
@@ -52,6 +55,18 @@ fn binary_command_help_exits_successfully() {
             assert!(stdout.contains("--arg <value>"));
             assert!(stdout.contains("--report-out <path>"));
             assert!(stdout.contains("TokenizerReport"));
+        } else if command == "shrink" {
+            assert!(stdout.contains("--input <path>"));
+            assert!(stdout.contains("--predicate <path>"));
+            assert!(stdout.contains("--predicate-arg <value>"));
+            assert!(stdout.contains("--out <path>"));
+            assert!(stdout.contains("--metadata-out <path>"));
+            assert!(stdout.contains("--timeout-ms <N>"));
+            assert!(stdout.contains("--max-runs <N>"));
+            assert!(stdout.contains("--quiet"));
+            assert!(stdout.contains("--json"));
+            assert!(stdout.contains("reads candidate bytes from stdin"));
+            assert!(!stdout.contains("Planned for a later milestone"));
         } else {
             assert!(stdout.contains("--seed <seed>"));
             assert!(stdout.contains("--seed-file <path>"));
@@ -92,16 +107,16 @@ fn binary_command_help_with_common_flags_exits_successfully() {
 }
 
 #[test]
-fn binary_placeholder_execution_exits_nonzero() {
+fn binary_replay_placeholder_execution_exits_nonzero() {
     let output = corpusforge()
-        .arg("shrink")
+        .arg("replay")
         .output()
         .expect("binary should run");
 
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
     assert!(stderr.contains("error: not implemented"));
-    assert!(stderr.contains("shrink command execution"));
+    assert!(stderr.contains("replay command execution"));
 }
 
 #[test]
@@ -284,6 +299,131 @@ fn binary_ci_tokenizer_rejects_missing_required_args() {
                 "tokenizer-harness".into(),
             ],
             "missing required option `--report-out`",
+        ),
+    ];
+
+    for (args, expected) in cases {
+        assert_invalid_argument(args, expected, expected);
+    }
+}
+
+#[test]
+fn binary_shrink_writes_reduced_bytes_metadata_and_json_summary() {
+    let temp = TestDir::new("shrink-json");
+    let input = temp.path().join("input.txt");
+    let out = temp.path().join("reduced.txt");
+    let metadata = temp.path().join("metadata.json");
+    fs::write(&input, b"prefix fail suffix").expect("input should be written");
+
+    let output = corpusforge()
+        .args(["shrink", "--input"])
+        .arg(&input)
+        .args(["--predicate"])
+        .arg(std::env::current_exe().expect("test executable should exist"))
+        .args([
+            "--predicate-arg",
+            "--ignored",
+            "--predicate-arg",
+            "--exact",
+            "--predicate-arg",
+            "shrink_predicate_fails_on_fail_substring",
+            "--out",
+        ])
+        .arg(&out)
+        .args(["--metadata-out"])
+        .arg(&metadata)
+        .args(["--timeout-ms", "1000", "--max-runs", "100", "--json"])
+        .output()
+        .expect("binary should run");
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    assert_eq!(fs::read(&out).expect("output should exist"), b"fail");
+
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    assert!(stdout.starts_with(&format!(
+        "{{\"tool_version\":\"{}\",\"command\":\"shrink\",\"input_byte_count\":18,\"reduced_byte_count\":4,\"predicate_runs\":",
+        env!("CARGO_PKG_VERSION")
+    )));
+    assert!(stdout.contains("\"failure_kind\":\"exit_code:101\""));
+    assert!(stdout.contains("\"timeout_ms\":1000"));
+    assert!(stdout.contains("\"max_runs\":100"));
+    assert!(stdout.ends_with('\n'));
+
+    let metadata_json = fs::read_to_string(&metadata).expect("metadata should exist");
+    assert_eq!(metadata_json, stdout);
+}
+
+#[test]
+fn binary_shrink_quiet_suppresses_summary_but_writes_output() {
+    let temp = TestDir::new("shrink-quiet");
+    let input = temp.path().join("input.txt");
+    let out = temp.path().join("reduced.txt");
+    fs::write(&input, b"before fail after").expect("input should be written");
+
+    let output = corpusforge()
+        .args(["shrink", "--input"])
+        .arg(&input)
+        .args(["--predicate"])
+        .arg(std::env::current_exe().expect("test executable should exist"))
+        .args([
+            "--predicate-arg",
+            "--ignored",
+            "--predicate-arg",
+            "--exact",
+            "--predicate-arg",
+            "shrink_predicate_fails_on_fail_substring",
+            "--out",
+        ])
+        .arg(&out)
+        .args(["--quiet", "--json"])
+        .output()
+        .expect("binary should run");
+
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+    assert_eq!(fs::read(&out).expect("output should exist"), b"fail");
+}
+
+#[test]
+fn binary_shrink_rejects_required_and_invalid_args() {
+    let cases: [(Vec<OsString>, &str); 4] = [
+        (
+            os_args(["shrink", "--predicate", "pred", "--out", "out"]),
+            "missing required option `--input`",
+        ),
+        (
+            os_args(["shrink", "--input", "input", "--out", "out"]),
+            "missing required option `--predicate`",
+        ),
+        (
+            os_args([
+                "shrink",
+                "--input",
+                "input",
+                "--predicate",
+                "pred",
+                "--out",
+                "out",
+                "--timeout-ms",
+                "0",
+            ]),
+            "`--timeout-ms` must be greater than zero",
+        ),
+        (
+            os_args([
+                "shrink",
+                "--input",
+                "input",
+                "--predicate",
+                "pred",
+                "--out",
+                "out",
+                "--max-runs",
+                "1",
+            ]),
+            "`--max-runs` must be at least 2",
         ),
     ];
 
@@ -755,6 +895,17 @@ fn binary_malformed_common_flags_fail_cleanly() {
     for (args, expected) in cases {
         assert_invalid_argument(args, &format!("{args:?}"), expected);
     }
+}
+
+#[test]
+#[ignore]
+fn shrink_predicate_fails_on_fail_substring() {
+    let mut input = Vec::new();
+    io::stdin()
+        .read_to_end(&mut input)
+        .expect("predicate should read stdin");
+
+    assert!(!input.windows(4).any(|window| window == b"fail"));
 }
 
 fn assert_invalid_argument<I, S>(args: I, case: &str, expected: &str)

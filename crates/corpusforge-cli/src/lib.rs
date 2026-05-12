@@ -7,6 +7,10 @@ use corpusforge_core::seed::MasterSeed;
 use corpusforge_core::{CorpusForgeError, Result};
 use corpusforge_ngram::{ByteBigramModel, ENGINE_NAME, ENGINE_VERSION};
 use corpusforge_profile::compile_path;
+use corpusforge_shrink::{
+    shrink_bytes, PredicateCommand, PredicateFailureKind, ShrinkConfig, ShrinkOutcome,
+    DEFAULT_MAX_RUNS, DEFAULT_TIMEOUT_MS,
+};
 use corpusforge_tokenizer::{
     generate_tokenizer_cases, run_stdin_harness, HarnessCommand, HarnessStatus, TokenizerCaseSpec,
     TokenizerReport, UnicodeMode, UnicodeOutputKind,
@@ -72,6 +76,7 @@ enum ParsedCommand {
     ExecutePlaceholder(&'static CommandSpec),
     ExecuteCiTokenizer(CiTokenizerOptions),
     ExecuteGen(GenOptions),
+    ExecuteShrink(ShrinkOptions),
     ExecuteProfile(ProfileCommand),
     ExecuteVerifyAlias(ProfileFileOptions),
 }
@@ -139,6 +144,19 @@ struct CiTokenizerOptions {
     command: PathBuf,
     args: Vec<String>,
     report_out: PathBuf,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct ShrinkOptions {
+    input: PathBuf,
+    predicate: PathBuf,
+    predicate_args: Vec<String>,
+    out: PathBuf,
+    metadata_out: Option<PathBuf>,
+    timeout_ms: u64,
+    max_runs: usize,
+    quiet: bool,
+    json: bool,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -253,6 +271,12 @@ where
                 } else {
                     parse_ci_tokenizer_options(tokenizer_args)
                         .map(ParsedCommand::ExecuteCiTokenizer)
+                }
+            } else if command.name == "shrink" {
+                if contains_only_help_flag(&remaining) {
+                    Ok(ParsedCommand::CommandHelp(command))
+                } else {
+                    parse_shrink_options(&remaining).map(ParsedCommand::ExecuteShrink)
                 }
             } else if contains_help_flag(&remaining) {
                 Ok(ParsedCommand::CommandHelp(command))
@@ -774,6 +798,145 @@ fn finish_ci_tokenizer_options(state: CiTokenizerOptionState) -> Result<CiTokeni
     })
 }
 
+fn parse_shrink_options(args: &[OsString]) -> Result<ShrinkOptions> {
+    let command_spec = find_command("shrink").expect("shrink command should exist");
+    let mut state = ShrinkOptionState::new();
+    let mut index = 0;
+
+    while index < args.len() {
+        let flag = args[index].to_string_lossy();
+        index += parse_shrink_option(command_spec, args, index, flag.as_ref(), &mut state)?;
+    }
+
+    finish_shrink_options(state)
+}
+
+struct ShrinkOptionState {
+    input: Option<PathBuf>,
+    predicate: Option<PathBuf>,
+    predicate_args: Vec<String>,
+    out: Option<PathBuf>,
+    metadata_out: Option<PathBuf>,
+    timeout_ms: Option<u64>,
+    max_runs: Option<usize>,
+    quiet: bool,
+    json: bool,
+}
+
+impl ShrinkOptionState {
+    const fn new() -> Self {
+        Self {
+            input: None,
+            predicate: None,
+            predicate_args: Vec::new(),
+            out: None,
+            metadata_out: None,
+            timeout_ms: None,
+            max_runs: None,
+            quiet: false,
+            json: false,
+        }
+    }
+}
+
+fn parse_shrink_option(
+    command_spec: &CommandSpec,
+    args: &[OsString],
+    index: usize,
+    flag: &str,
+    state: &mut ShrinkOptionState,
+) -> Result<usize> {
+    match flag {
+        "--input" => {
+            state.input = Some(take_unique_path(&state.input, "shrink", args, index, flag)?)
+        }
+        "--predicate" => {
+            state.predicate = Some(take_unique_path(
+                &state.predicate,
+                "shrink",
+                args,
+                index,
+                flag,
+            )?)
+        }
+        "--predicate-arg" => state.predicate_args.push(take_raw_string_value(
+            "shrink",
+            args,
+            index,
+            "--predicate-arg",
+        )?),
+        "--out" => state.out = Some(take_unique_path(&state.out, "shrink", args, index, flag)?),
+        "--metadata-out" => {
+            state.metadata_out = Some(take_unique_path(
+                &state.metadata_out,
+                "shrink",
+                args,
+                index,
+                flag,
+            )?)
+        }
+        "--timeout-ms" => {
+            state.timeout_ms = Some(take_timeout_ms(
+                command_spec,
+                args,
+                index,
+                &state.timeout_ms,
+            )?)
+        }
+        "--max-runs" => {
+            state.max_runs = Some(take_max_runs(command_spec, args, index, &state.max_runs)?)
+        }
+        "--quiet" => {
+            claim_switch(&mut state.quiet, flag)?;
+            return Ok(1);
+        }
+        "--json" => {
+            claim_switch(&mut state.json, flag)?;
+            return Ok(1);
+        }
+        "-h" | "--help" => {
+            return Err(CorpusForgeError::invalid_argument(
+                "help must be requested without other arguments; run `corpusforge shrink --help`",
+            ))
+        }
+        other if other.starts_with('-') => {
+            return Err(CorpusForgeError::invalid_argument(format!(
+                "unknown option `{other}` for `shrink`; run `corpusforge shrink --help`"
+            )));
+        }
+        other => {
+            return Err(CorpusForgeError::invalid_argument(format!(
+                "unexpected argument `{other}` for `shrink`; run `corpusforge shrink --help`"
+            )));
+        }
+    }
+    Ok(2)
+}
+
+fn finish_shrink_options(state: ShrinkOptionState) -> Result<ShrinkOptions> {
+    let input = state.input.ok_or_else(|| {
+        CorpusForgeError::invalid_argument("missing required option `--input` for `shrink`")
+    })?;
+    let predicate = state.predicate.ok_or_else(|| {
+        CorpusForgeError::invalid_argument("missing required option `--predicate` for `shrink`")
+    })?;
+    let out = state.out.ok_or_else(|| {
+        CorpusForgeError::invalid_argument("missing required option `--out` for `shrink`")
+    })?;
+
+    Ok(ShrinkOptions {
+        input,
+        predicate,
+        predicate_args: state.predicate_args,
+        out,
+        metadata_out: state.metadata_out,
+        timeout_ms: state.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS),
+        max_runs: state.max_runs.unwrap_or(DEFAULT_MAX_RUNS),
+        quiet: state.quiet,
+        json: state.json,
+    })
+}
+
 fn reject_profile_only_gen_options(
     json: bool,
     metadata_out: Option<&PathBuf>,
@@ -884,6 +1047,28 @@ fn take_case_count(
     reject_duplicate(current, "--cases")?;
     let value = take_value(command, args, index, "--cases")?;
     parse_case_count(&value)
+}
+
+fn take_timeout_ms(
+    command: &CommandSpec,
+    args: &[OsString],
+    index: usize,
+    current: &Option<u64>,
+) -> Result<u64> {
+    reject_duplicate(current, "--timeout-ms")?;
+    let value = take_raw_string_value(command.name, args, index, "--timeout-ms")?;
+    parse_timeout_ms(&value)
+}
+
+fn take_max_runs(
+    command: &CommandSpec,
+    args: &[OsString],
+    index: usize,
+    current: &Option<usize>,
+) -> Result<usize> {
+    reject_duplicate(current, "--max-runs")?;
+    let value = take_raw_string_value(command.name, args, index, "--max-runs")?;
+    parse_max_runs(&value)
 }
 
 fn set_gen_determinism(
@@ -1010,6 +1195,7 @@ fn execute_command(command: ParsedCommand, stdout: &mut impl Write) -> Result<Op
         )),
         ParsedCommand::ExecuteCiTokenizer(options) => execute_ci_tokenizer(options).map(Some),
         ParsedCommand::ExecuteGen(options) => execute_gen(options, stdout),
+        ParsedCommand::ExecuteShrink(options) => execute_shrink(options).map(Some),
         ParsedCommand::ExecuteProfile(command) => execute_profile_command(command).map(Some),
         ParsedCommand::ExecuteVerifyAlias(options) => execute_profile_verify(options).map(Some),
     }
@@ -1134,6 +1320,30 @@ fn join_tokenizer_cases(cases: &[corpusforge_tokenizer::TokenizerCase]) -> Vec<u
     bytes
 }
 
+fn execute_shrink(options: ShrinkOptions) -> Result<String> {
+    let input = fs::read(&options.input)?;
+    let predicate =
+        PredicateCommand::new(options.predicate.clone(), options.predicate_args.clone());
+    let config = ShrinkConfig::new(predicate)
+        .with_timeout_ms(options.timeout_ms)
+        .with_max_runs(options.max_runs);
+    let outcome = shrink_bytes(&input, &config)?;
+
+    let mut file = File::create(&options.out)?;
+    file.write_all(outcome.reduced_bytes())?;
+    file.flush()?;
+
+    if let Some(metadata_out) = &options.metadata_out {
+        fs::write(metadata_out, format_shrink_metadata(&options, &outcome))?;
+    }
+
+    if options.quiet {
+        return Ok(String::new());
+    }
+
+    Ok(format_shrink_summary(&options, &outcome))
+}
+
 fn read_seed(seed_source: &SeedSource) -> Result<MasterSeed> {
     match seed_source {
         SeedSource::Inline(text) => MasterSeed::from_str(text),
@@ -1189,6 +1399,60 @@ fn format_unicode_gen_summary(
         output_kind = options.output_kind,
         case_count = options.case_count
     )
+}
+
+fn format_shrink_summary(options: &ShrinkOptions, outcome: &ShrinkOutcome) -> String {
+    if options.json {
+        return format!(
+            "{{\"tool_version\":\"{}\",\"command\":\"shrink\",\"input_byte_count\":{},\"reduced_byte_count\":{},\"predicate_runs\":{},\"failure_kind\":\"{}\",\"original_hash\":\"{}\",\"reduced_hash\":\"{}\",\"timeout_ms\":{},\"max_runs\":{},\"output_mode\":\"file\",\"out\":\"{}\"}}",
+            json_escape(env!("CARGO_PKG_VERSION")),
+            outcome.original_byte_count(),
+            outcome.reduced_byte_count(),
+            outcome.predicate_runs(),
+            format_failure_kind(outcome.failure_kind()),
+            json_escape(outcome.original_hash()),
+            json_escape(outcome.reduced_hash()),
+            options.timeout_ms,
+            options.max_runs,
+            json_escape(&options.out.display().to_string())
+        );
+    }
+
+    format!(
+        "shrunk failing input\ninput_byte_count: {input_byte_count}\nreduced_byte_count: {reduced_byte_count}\npredicate_runs: {predicate_runs}\nfailure_kind: {failure_kind}\noriginal_hash: {original_hash}\nreduced_hash: {reduced_hash}\ntimeout_ms: {timeout_ms}\nmax_runs: {max_runs}\nout: {out}",
+        input_byte_count = outcome.original_byte_count(),
+        reduced_byte_count = outcome.reduced_byte_count(),
+        predicate_runs = outcome.predicate_runs(),
+        failure_kind = format_failure_kind(outcome.failure_kind()),
+        original_hash = outcome.original_hash(),
+        reduced_hash = outcome.reduced_hash(),
+        timeout_ms = options.timeout_ms,
+        max_runs = options.max_runs,
+        out = options.out.display()
+    )
+}
+
+fn format_shrink_metadata(options: &ShrinkOptions, outcome: &ShrinkOutcome) -> String {
+    format!(
+        "{{\"tool_version\":\"{}\",\"command\":\"shrink\",\"input_byte_count\":{},\"reduced_byte_count\":{},\"predicate_runs\":{},\"failure_kind\":\"{}\",\"original_hash\":\"{}\",\"reduced_hash\":\"{}\",\"timeout_ms\":{},\"max_runs\":{},\"output_mode\":\"file\",\"out\":\"{}\"}}\n",
+        json_escape(env!("CARGO_PKG_VERSION")),
+        outcome.original_byte_count(),
+        outcome.reduced_byte_count(),
+        outcome.predicate_runs(),
+        format_failure_kind(outcome.failure_kind()),
+        json_escape(outcome.original_hash()),
+        json_escape(outcome.reduced_hash()),
+        options.timeout_ms,
+        options.max_runs,
+        json_escape(&options.out.display().to_string())
+    )
+}
+
+fn format_failure_kind(kind: PredicateFailureKind) -> String {
+    match kind {
+        PredicateFailureKind::ExitCode(code) => format!("exit_code:{code}"),
+        PredicateFailureKind::Timeout => "timeout".to_owned(),
+    }
 }
 
 fn format_gen_metadata(
@@ -1575,6 +1839,50 @@ fn parse_case_count(value: &str) -> Result<usize> {
     Ok(parsed)
 }
 
+fn parse_timeout_ms(value: &str) -> Result<u64> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(CorpusForgeError::invalid_argument(format!(
+            "invalid timeout `{value}`; expected a positive integer for `--timeout-ms`"
+        )));
+    }
+
+    let parsed = value.parse::<u64>().map_err(|_| {
+        CorpusForgeError::invalid_argument(format!(
+            "invalid timeout `{value}`; expected a positive integer for `--timeout-ms`"
+        ))
+    })?;
+
+    if parsed == 0 {
+        return Err(CorpusForgeError::invalid_argument(
+            "`--timeout-ms` must be greater than zero",
+        ));
+    }
+
+    Ok(parsed)
+}
+
+fn parse_max_runs(value: &str) -> Result<usize> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(CorpusForgeError::invalid_argument(format!(
+            "invalid run limit `{value}`; expected a positive integer for `--max-runs`"
+        )));
+    }
+
+    let parsed = value.parse::<usize>().map_err(|_| {
+        CorpusForgeError::invalid_argument(format!(
+            "invalid run limit `{value}`; expected a positive integer for `--max-runs`"
+        ))
+    })?;
+
+    if parsed < 2 {
+        return Err(CorpusForgeError::invalid_argument(
+            "`--max-runs` must be at least 2 to confirm the original failure",
+        ));
+    }
+
+    Ok(parsed)
+}
+
 fn strip_ascii_suffix<'a>(value: &'a str, suffix: &str) -> Option<&'a str> {
     value
         .get(value.len().checked_sub(suffix.len())?..)
@@ -1617,8 +1925,20 @@ fn command_help(command: &CommandSpec) -> String {
         return gen_help(command);
     }
 
+    if command.name == "shrink" {
+        return shrink_help(command);
+    }
+
     format!(
         "corpusforge {name}\n\n{summary}\n\nUSAGE:\n    corpusforge {name} [OPTIONS]\n\nOPTIONS:\n    --seed <seed>                 Use an inline deterministic seed\n    --seed-file <path>            Read the deterministic seed from a file\n    --profile <path>              Read a CorpusForge profile path\n    --out <path>                  Write generated output to a path\n    --bytes <N>                   Set output size in bytes; supports KB, MB, GB\n    --determinism <mode>          Determinism mode: strict or relaxed\n    --metadata-out <path>         Write machine-readable metadata to a path\n    --quiet                       Reduce human-readable output\n    --json                        Emit machine-readable JSON where supported\n    -h, --help                    Print help\n\nEXAMPLES:\n    corpusforge {name} --seed 42 --profile profiles/smoke.cff --bytes 64KB\n    corpusforge {name} --seed-file seed.txt --determinism strict --metadata-out report.json --json\n\nSTATUS:\n    Planned for a later milestone; execution currently returns NotImplemented.",
+        name = command.name,
+        summary = command.summary
+    )
+}
+
+fn shrink_help(command: &CommandSpec) -> String {
+    format!(
+        "corpusforge {name}\n\n{summary}\n\nUSAGE:\n    corpusforge shrink --input <path> --predicate <path> [--predicate-arg <value> ...] --out <path> [OPTIONS]\n\nOPTIONS:\n    --input <path>                Read the original failing input bytes\n    --predicate <path>            Predicate executable path; invoked directly without a shell\n    --predicate-arg <value>       Literal predicate argument; may be repeated and preserves order\n    --out <path>                  Write reduced failing bytes to a path\n    --metadata-out <path>         Write stable shrink metadata JSON to a path\n    --timeout-ms <N>              Per-run predicate timeout in milliseconds; default 1000\n    --max-runs <N>                Maximum predicate executions; default 10000, minimum 2\n    --quiet                       Suppress stdout summary after writing outputs\n    --json                        Emit stable JSON summary on stdout\n    -h, --help                    Print help\n\nPREDICATE:\n    The predicate reads candidate bytes from stdin. Exit code 0 means the candidate passed; a non-zero exit or timeout is treated as a failure signature to preserve.",
         name = command.name,
         summary = command.summary
     )
@@ -1712,7 +2032,9 @@ mod tests {
             };
 
             assert!(help.contains(&format!("corpusforge {command}")));
-            assert!(help.contains("--profile <path>"));
+            if command != "shrink" {
+                assert!(help.contains("--profile <path>"));
+            }
             if command == "profile" {
                 assert!(help.contains("build <input> --out <path>"));
                 assert!(help.contains("inspect --profile <path>"));
@@ -1727,6 +2049,18 @@ mod tests {
                 assert!(help.contains("--arg <value>"));
                 assert!(help.contains("--report-out <path>"));
                 assert!(help.contains("TokenizerReport"));
+                assert!(!help.contains("Planned for a later milestone"));
+            } else if command == "shrink" {
+                assert!(help.contains("--input <path>"));
+                assert!(help.contains("--predicate <path>"));
+                assert!(help.contains("--predicate-arg <value>"));
+                assert!(help.contains("--out <path>"));
+                assert!(help.contains("--metadata-out <path>"));
+                assert!(help.contains("--timeout-ms <N>"));
+                assert!(help.contains("--max-runs <N>"));
+                assert!(help.contains("--quiet"));
+                assert!(help.contains("--json"));
+                assert!(help.contains("reads candidate bytes from stdin"));
                 assert!(!help.contains("Planned for a later milestone"));
             } else {
                 assert!(help.contains("--seed <seed>"));
@@ -1774,13 +2108,13 @@ mod tests {
     }
 
     #[test]
-    fn placeholder_command_returns_not_implemented() {
-        let CliOutcome::Failure(error) = run(["corpusforge", "shrink"]) else {
+    fn replay_placeholder_command_returns_not_implemented() {
+        let CliOutcome::Failure(error) = run(["corpusforge", "replay"]) else {
             panic!("placeholder execution should fail");
         };
 
         assert_eq!(error.category(), "not_implemented");
-        assert!(error.to_string().contains("shrink command execution"));
+        assert!(error.to_string().contains("replay command execution"));
     }
 
     #[test]
@@ -1808,6 +2142,278 @@ mod tests {
 
         assert_eq!(error.category(), "not_implemented");
         assert!(error.to_string().contains("replay command execution"));
+    }
+
+    #[test]
+    fn shrink_requires_input_predicate_and_out() {
+        let cases = [
+            (
+                &[
+                    "corpusforge",
+                    "shrink",
+                    "--predicate",
+                    "pred",
+                    "--out",
+                    "out",
+                ][..],
+                "--input",
+            ),
+            (
+                &["corpusforge", "shrink", "--input", "input", "--out", "out"][..],
+                "--predicate",
+            ),
+            (
+                &[
+                    "corpusforge",
+                    "shrink",
+                    "--input",
+                    "input",
+                    "--predicate",
+                    "pred",
+                ][..],
+                "--out",
+            ),
+        ];
+
+        for (args, expected) in cases {
+            let CliOutcome::Failure(error) = run(args) else {
+                panic!("{args:?} should fail");
+            };
+
+            assert_eq!(error.category(), "invalid_argument");
+            assert!(error.to_string().contains(expected));
+        }
+    }
+
+    #[test]
+    fn shrink_rejects_duplicates_and_invalid_limits() {
+        let cases = [
+            (
+                &[
+                    "corpusforge",
+                    "shrink",
+                    "--input",
+                    "a",
+                    "--input",
+                    "b",
+                    "--predicate",
+                    "pred",
+                    "--out",
+                    "out",
+                ][..],
+                "duplicate option `--input`",
+            ),
+            (
+                &[
+                    "corpusforge",
+                    "shrink",
+                    "--input",
+                    "input",
+                    "--predicate",
+                    "pred",
+                    "--out",
+                    "out",
+                    "--timeout-ms",
+                    "0",
+                ][..],
+                "`--timeout-ms` must be greater than zero",
+            ),
+            (
+                &[
+                    "corpusforge",
+                    "shrink",
+                    "--input",
+                    "input",
+                    "--predicate",
+                    "pred",
+                    "--out",
+                    "out",
+                    "--timeout-ms",
+                    "1.5",
+                ][..],
+                "invalid timeout",
+            ),
+            (
+                &[
+                    "corpusforge",
+                    "shrink",
+                    "--input",
+                    "input",
+                    "--predicate",
+                    "pred",
+                    "--out",
+                    "out",
+                    "--timeout-ms",
+                    "-1",
+                ][..],
+                "invalid timeout",
+            ),
+            (
+                &[
+                    "corpusforge",
+                    "shrink",
+                    "--input",
+                    "input",
+                    "--predicate",
+                    "pred",
+                    "--out",
+                    "out",
+                    "--max-runs",
+                    "1",
+                ][..],
+                "`--max-runs` must be at least 2",
+            ),
+            (
+                &[
+                    "corpusforge",
+                    "shrink",
+                    "--input",
+                    "input",
+                    "--predicate",
+                    "pred",
+                    "--out",
+                    "out",
+                    "--max-runs",
+                    "many",
+                ][..],
+                "invalid run limit",
+            ),
+            (
+                &[
+                    "corpusforge",
+                    "shrink",
+                    "--input",
+                    "input",
+                    "--predicate",
+                    "pred",
+                    "--out",
+                    "out",
+                    "--max-runs",
+                    "-2",
+                ][..],
+                "invalid run limit",
+            ),
+            (
+                &[
+                    "corpusforge",
+                    "shrink",
+                    "--input",
+                    "input",
+                    "--predicate",
+                    "pred",
+                    "--out",
+                    "out",
+                    "--json",
+                    "--json",
+                ][..],
+                "duplicate option `--json`",
+            ),
+        ];
+
+        assert_invalid_argument_cases(&cases);
+    }
+
+    #[test]
+    fn shrink_json_summary_and_metadata_are_stable() {
+        let input = temp_report_path("shrink-input.txt");
+        let out = temp_report_path("shrink-out.txt");
+        let metadata = temp_report_path("shrink-metadata.json");
+        std::fs::write(&input, b"prefix fail suffix").expect("input should be written");
+
+        let helper = std::env::current_exe().expect("test executable should exist");
+        let helper_text = helper.display().to_string();
+        let input_text = input.display().to_string();
+        let out_text = out.display().to_string();
+        let metadata_text = metadata.display().to_string();
+
+        let outcome = run([
+            "corpusforge",
+            "shrink",
+            "--input",
+            &input_text,
+            "--predicate",
+            &helper_text,
+            "--predicate-arg",
+            "--ignored",
+            "--predicate-arg",
+            "--exact",
+            "--predicate-arg",
+            "tests::shrink_harness_fails_on_fail_substring",
+            "--out",
+            &out_text,
+            "--metadata-out",
+            &metadata_text,
+            "--timeout-ms",
+            "1000",
+            "--max-runs",
+            "100",
+            "--json",
+        ]);
+
+        let CliOutcome::Success(summary) = outcome else {
+            panic!("shrink should succeed");
+        };
+
+        assert_eq!(std::fs::read(&out).expect("out should be written"), b"fail");
+        assert!(summary.starts_with(&format!(
+            "{{\"tool_version\":\"{}\",\"command\":\"shrink\",\"input_byte_count\":18,\"reduced_byte_count\":4,\"predicate_runs\":",
+            env!("CARGO_PKG_VERSION")
+        )));
+        assert!(summary.contains("\"failure_kind\":\"exit_code:101\""));
+        assert!(summary.contains("\"timeout_ms\":1000"));
+        assert!(summary.contains("\"max_runs\":100"));
+        assert!(summary.ends_with(&format!(
+            "\"output_mode\":\"file\",\"out\":\"{}\"}}",
+            json_escape_for_test(&out_text)
+        )));
+
+        let metadata_json = std::fs::read_to_string(&metadata).expect("metadata should be written");
+        assert_eq!(metadata_json, format!("{summary}\n"));
+
+        let _ = std::fs::remove_file(input);
+        let _ = std::fs::remove_file(out);
+        let _ = std::fs::remove_file(metadata);
+    }
+
+    #[test]
+    fn shrink_quiet_suppresses_summary_but_writes_output() {
+        let input = temp_report_path("shrink-quiet-input.txt");
+        let out = temp_report_path("shrink-quiet-out.txt");
+        std::fs::write(&input, b"before fail after").expect("input should be written");
+
+        let helper = std::env::current_exe().expect("test executable should exist");
+        let helper_text = helper.display().to_string();
+        let input_text = input.display().to_string();
+        let out_text = out.display().to_string();
+
+        let outcome = run([
+            "corpusforge",
+            "shrink",
+            "--input",
+            &input_text,
+            "--predicate",
+            &helper_text,
+            "--predicate-arg",
+            "--ignored",
+            "--predicate-arg",
+            "--exact",
+            "--predicate-arg",
+            "tests::shrink_harness_fails_on_fail_substring",
+            "--out",
+            &out_text,
+            "--quiet",
+            "--json",
+        ]);
+
+        let CliOutcome::Success(summary) = outcome else {
+            panic!("shrink should succeed");
+        };
+
+        assert!(summary.is_empty());
+        assert_eq!(std::fs::read(&out).expect("out should be written"), b"fail");
+
+        let _ = std::fs::remove_file(input);
+        let _ = std::fs::remove_file(out);
     }
 
     #[test]
@@ -2303,6 +2909,17 @@ mod tests {
             .expect("helper should read stdin");
 
         assert!(input.is_empty());
+    }
+
+    #[test]
+    #[ignore]
+    fn shrink_harness_fails_on_fail_substring() {
+        let mut input = Vec::new();
+        io::stdin()
+            .read_to_end(&mut input)
+            .expect("helper should read stdin");
+
+        assert!(!input.windows(4).any(|window| window == b"fail"));
     }
 
     fn temp_report_path(name: &str) -> std::path::PathBuf {
