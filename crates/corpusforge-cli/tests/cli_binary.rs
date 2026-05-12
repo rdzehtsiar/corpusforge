@@ -137,24 +137,10 @@ fn binary_common_flags_parse_before_placeholder_execution() {
 fn binary_ci_tokenizer_writes_passing_report_and_preserves_arg_order() {
     let temp = TestDir::new("ci-tokenizer-pass");
     let report = temp.path().join("report.json");
-    let harness = std::env::var_os("CARGO_BIN_EXE_corpusforge")
-        .map(PathBuf::from)
-        .expect("corpusforge binary path should be available");
+    let harness = corpusforge_binary_path();
 
     let output = corpusforge()
-        .args([
-            "ci",
-            "tokenizer",
-            "--unicode",
-            "grapheme",
-            "--output-kind",
-            "valid-text",
-            "--cases",
-            "2",
-            "--seed",
-            "1337",
-            "--command",
-        ])
+        .args(tokenizer_ci_args("grapheme", "2"))
         .arg(&harness)
         .args([
             "--arg",
@@ -176,21 +162,12 @@ fn binary_ci_tokenizer_writes_passing_report_and_preserves_arg_order() {
     let json = fs::read_to_string(&report).expect("report should exist");
     assert_eq!(
         json,
-        format!(
-            concat!(
-                "{{\"tool_version\":\"{}\",",
-                "\"command\":\"ci tokenizer\",",
-                "\"seed\":\"096875ea372a1b80bcccb9d8f3f10dde3e0f65e6facc94bf477e3b9531c7aa51\",",
-                "\"profile_hash\":null,",
-                "\"unicode_mode\":\"grapheme\",",
-                "\"output_kind\":\"valid-text\",",
-                "\"case_count\":2,",
-                "\"harness_command\":\"{} --version --literal-second\",",
-                "\"status\":\"passed\",",
-                "\"failure_sample\":null}}"
-            ),
-            env!("CARGO_PKG_VERSION"),
-            json_escape_for_test(&harness.display().to_string())
+        expected_tokenizer_report_json(
+            "grapheme",
+            2,
+            &harness,
+            "--version --literal-second",
+            "\"failure_sample\":null"
         )
     );
 }
@@ -198,26 +175,12 @@ fn binary_ci_tokenizer_writes_passing_report_and_preserves_arg_order() {
 #[test]
 fn binary_ci_tokenizer_treats_help_arg_as_literal_harness_arg() {
     let temp = TestDir::new("ci-tokenizer-help-arg");
-    let harness = std::env::var_os("CARGO_BIN_EXE_corpusforge")
-        .map(PathBuf::from)
-        .expect("corpusforge binary path should be available");
+    let harness = corpusforge_binary_path();
 
     for help_arg in ["--help", "-h"] {
         let report = temp.path().join(format!("report-{help_arg}.json"));
         let output = corpusforge()
-            .args([
-                "ci",
-                "tokenizer",
-                "--unicode",
-                "grapheme",
-                "--output-kind",
-                "valid-text",
-                "--cases",
-                "1",
-                "--seed",
-                "1337",
-                "--command",
-            ])
+            .args(tokenizer_ci_args("grapheme", "1"))
             .arg(&harness)
             .args(["--arg", help_arg, "--report-out"])
             .arg(&report)
@@ -243,24 +206,10 @@ fn binary_ci_tokenizer_treats_help_arg_as_literal_harness_arg() {
 fn binary_ci_tokenizer_writes_failing_report_with_failure_sample() {
     let temp = TestDir::new("ci-tokenizer-fail");
     let report = temp.path().join("report.json");
-    let harness = std::env::var_os("CARGO_BIN_EXE_corpusforge")
-        .map(PathBuf::from)
-        .expect("corpusforge binary path should be available");
+    let harness = corpusforge_binary_path();
 
     let output = corpusforge()
-        .args([
-            "ci",
-            "tokenizer",
-            "--unicode",
-            "mixed",
-            "--output-kind",
-            "valid-text",
-            "--cases",
-            "2",
-            "--seed",
-            "1337",
-            "--command",
-        ])
+        .args(tokenizer_ci_args("mixed", "2"))
         .arg(&harness)
         .args(["--arg", "unknown", "--report-out"])
         .arg(&report)
@@ -275,26 +224,19 @@ fn binary_ci_tokenizer_writes_failing_report_with_failure_sample() {
     let json = fs::read_to_string(&report).expect("report should exist");
     assert_eq!(
         json,
-        format!(
+        expected_tokenizer_report_json(
+            "mixed",
+            2,
+            &harness,
+            "unknown",
             concat!(
-                "{{\"tool_version\":\"{}\",",
-                "\"command\":\"ci tokenizer\",",
-                "\"seed\":\"096875ea372a1b80bcccb9d8f3f10dde3e0f65e6facc94bf477e3b9531c7aa51\",",
-                "\"profile_hash\":null,",
-                "\"unicode_mode\":\"mixed\",",
-                "\"output_kind\":\"valid-text\",",
-                "\"case_count\":2,",
-                "\"harness_command\":\"{} unknown\",",
-                "\"status\":\"failed\",",
-                "\"failure_sample\":{{",
+                "\"failure_sample\":{",
                 "\"case_index\":0,",
                 "\"byte_count\":13,",
                 "\"hex_bytes\":\"e2808f72746c206d61726b6572\",",
                 "\"exit_code\":1",
-                "}}}}"
-            ),
-            env!("CARGO_PKG_VERSION"),
-            json_escape_for_test(&harness.display().to_string())
+                "}"
+            )
         )
     );
 }
@@ -516,17 +458,7 @@ fn binary_gen_repository_profile_seed_1337_matches_golden_hex() {
 #[test]
 fn binary_gen_unicode_valid_text_seed_1337_matches_golden_hex() {
     let first = corpusforge()
-        .args([
-            "gen",
-            "--unicode",
-            "mixed",
-            "--output-kind",
-            "valid-text",
-            "--cases",
-            "12",
-            "--seed",
-            "1337",
-        ])
+        .args(gen_unicode_args("mixed", "valid-text", "12"))
         .output()
         .expect("binary should run");
 
@@ -540,17 +472,7 @@ fn binary_gen_unicode_valid_text_seed_1337_matches_golden_hex() {
     assert_ne!(first.stdout.last(), Some(&b'\n'));
 
     let second = corpusforge()
-        .args([
-            "gen",
-            "--unicode",
-            "mixed",
-            "--output-kind",
-            "valid-text",
-            "--cases",
-            "12",
-            "--seed",
-            "1337",
-        ])
+        .args(gen_unicode_args("mixed", "valid-text", "12"))
         .output()
         .expect("binary should run");
 
@@ -561,17 +483,7 @@ fn binary_gen_unicode_valid_text_seed_1337_matches_golden_hex() {
 #[test]
 fn binary_gen_unicode_raw_bytes_invalid_utf8_seed_1337_matches_golden_hex() {
     let output = corpusforge()
-        .args([
-            "gen",
-            "--unicode",
-            "invalid-utf8",
-            "--output-kind",
-            "raw-bytes",
-            "--cases",
-            "12",
-            "--seed",
-            "1337",
-        ])
+        .args(gen_unicode_args("invalid-utf8", "raw-bytes", "12"))
         .output()
         .expect("binary should run");
 
@@ -591,18 +503,8 @@ fn binary_gen_unicode_out_writes_bytes_and_summary() {
     let out = temp.path().join("unicode.bin");
 
     let output = corpusforge()
-        .args([
-            "gen",
-            "--unicode",
-            "mixed",
-            "--output-kind",
-            "valid-text",
-            "--cases",
-            "12",
-            "--seed",
-            "1337",
-            "--out",
-        ])
+        .args(gen_unicode_args("mixed", "valid-text", "12"))
+        .arg("--out")
         .arg(&out)
         .output()
         .expect("binary should run");
@@ -627,62 +529,33 @@ fn binary_gen_unicode_out_writes_bytes_and_summary() {
 fn binary_gen_unicode_rejects_missing_and_mixed_options() {
     let cases: [(Vec<OsString>, &str); 4] = [
         (
-            vec![
-                "gen".into(),
-                "--unicode".into(),
-                "mixed".into(),
-                "--cases".into(),
-                "12".into(),
-                "--seed".into(),
-                "1337".into(),
-            ],
+            os_args([
+                "gen",
+                "--unicode",
+                "mixed",
+                "--cases",
+                "12",
+                "--seed",
+                "1337",
+            ]),
             "missing required option `--output-kind`",
         ),
         (
-            vec![
-                "gen".into(),
-                "--unicode".into(),
-                "mixed".into(),
-                "--output-kind".into(),
-                "valid-text".into(),
-                "--cases".into(),
-                "12".into(),
-                "--seed".into(),
-                "1337".into(),
-                "--bytes".into(),
-                "64".into(),
-            ],
+            extend_os_args(
+                gen_unicode_args("mixed", "valid-text", "12"),
+                ["--bytes", "64"],
+            ),
             "cannot be mixed",
         ),
         (
-            vec![
-                "gen".into(),
-                "--unicode".into(),
-                "mixed".into(),
-                "--output-kind".into(),
-                "valid-text".into(),
-                "--cases".into(),
-                "12".into(),
-                "--seed".into(),
-                "1337".into(),
-                "--json".into(),
-            ],
+            extend_os_args(gen_unicode_args("mixed", "valid-text", "12"), ["--json"]),
             "only supported for profile-backed",
         ),
         (
-            vec![
-                "gen".into(),
-                "--unicode".into(),
-                "mixed".into(),
-                "--output-kind".into(),
-                "valid-text".into(),
-                "--cases".into(),
-                "12".into(),
-                "--seed".into(),
-                "1337".into(),
-                "--metadata-out".into(),
-                "metadata.json".into(),
-            ],
+            extend_os_args(
+                gen_unicode_args("mixed", "valid-text", "12"),
+                ["--metadata-out", "metadata.json"],
+            ),
             "only supported for profile-backed",
         ),
     ];
@@ -904,6 +777,85 @@ where
         stderr.contains(expected),
         "{case} stderr should contain {expected}: {stderr}"
     );
+}
+
+fn corpusforge_binary_path() -> PathBuf {
+    std::env::var_os("CARGO_BIN_EXE_corpusforge")
+        .map(PathBuf::from)
+        .expect("corpusforge binary path should be available")
+}
+
+fn tokenizer_ci_args(mode: &str, cases: &str) -> Vec<OsString> {
+    os_args([
+        "ci",
+        "tokenizer",
+        "--unicode",
+        mode,
+        "--output-kind",
+        "valid-text",
+        "--cases",
+        cases,
+        "--seed",
+        "1337",
+        "--command",
+    ])
+}
+
+fn gen_unicode_args(mode: &str, output_kind: &str, cases: &str) -> Vec<OsString> {
+    os_args([
+        "gen",
+        "--unicode",
+        mode,
+        "--output-kind",
+        output_kind,
+        "--cases",
+        cases,
+        "--seed",
+        "1337",
+    ])
+}
+
+fn expected_tokenizer_report_json(
+    mode: &str,
+    case_count: usize,
+    harness: &Path,
+    harness_args: &str,
+    failure_sample: &str,
+) -> String {
+    format!(
+        concat!(
+            "{{\"tool_version\":\"{}\",",
+            "\"command\":\"ci tokenizer\",",
+            "\"seed\":\"096875ea372a1b80bcccb9d8f3f10dde3e0f65e6facc94bf477e3b9531c7aa51\",",
+            "\"profile_hash\":null,",
+            "\"unicode_mode\":\"{}\",",
+            "\"output_kind\":\"valid-text\",",
+            "\"case_count\":{},",
+            "\"harness_command\":\"{} {}\",",
+            "\"status\":\"{}\",",
+            "{}}}"
+        ),
+        env!("CARGO_PKG_VERSION"),
+        mode,
+        case_count,
+        json_escape_for_test(&harness.display().to_string()),
+        harness_args,
+        if failure_sample.contains("null") {
+            "passed"
+        } else {
+            "failed"
+        },
+        failure_sample
+    )
+}
+
+fn os_args<const N: usize>(args: [&str; N]) -> Vec<OsString> {
+    args.into_iter().map(OsString::from).collect()
+}
+
+fn extend_os_args<const N: usize>(mut args: Vec<OsString>, extra: [&str; N]) -> Vec<OsString> {
+    args.extend(extra.into_iter().map(OsString::from));
+    args
 }
 
 fn assert_profile_summary(stdout: &str) {

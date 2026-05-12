@@ -421,166 +421,151 @@ fn parse_profile_file_options(command: &str, args: &[OsString]) -> Result<Profil
 
 fn parse_gen_options(args: &[OsString]) -> Result<GenOptions> {
     let command = find_command("gen").expect("gen command should exist");
-    let mut profile = None;
-    let mut seed_source = None;
-    let mut byte_count = None;
-    let mut unicode_mode = None;
-    let mut output_kind = None;
-    let mut case_count = None;
-    let mut out = None;
-    let mut metadata_out = None;
-    let mut determinism = DeterminismMode::Strict;
-    let mut determinism_set = false;
-    let mut quiet = false;
-    let mut json = false;
+    let mut state = GenOptionState::new();
     let mut index = 0;
 
     while index < args.len() {
         let flag = args[index].to_string_lossy();
-
-        match flag.as_ref() {
-            "--profile" => {
-                if profile.is_some() {
-                    return Err(CorpusForgeError::invalid_argument(
-                        "duplicate option `--profile`",
-                    ));
-                }
-                profile = Some(take_path_value("gen", args, index, "--profile")?);
-                index += 2;
-            }
-            "--seed" => {
-                if let Some(existing) = seed_source_name(&seed_source) {
-                    return Err(seed_conflict("--seed", existing));
-                }
-                let seed = take_value(command, args, index, "--seed")?;
-                validate_non_empty(&seed, "--seed")?;
-                seed_source = Some(SeedSource::Inline(seed));
-                index += 2;
-            }
-            "--seed-file" => {
-                if let Some(existing) = seed_source_name(&seed_source) {
-                    return Err(seed_conflict("--seed-file", existing));
-                }
-                seed_source = Some(SeedSource::File(take_path_value(
-                    "gen",
-                    args,
-                    index,
-                    "--seed-file",
-                )?));
-                index += 2;
-            }
-            "--bytes" => {
-                if byte_count.is_some() {
-                    return Err(CorpusForgeError::invalid_argument(
-                        "duplicate option `--bytes`",
-                    ));
-                }
-                let value = take_value(command, args, index, "--bytes")?;
-                let bytes = parse_byte_size(&value)?;
-                byte_count = Some(usize::try_from(bytes).map_err(|_| {
-                    CorpusForgeError::invalid_argument(format!(
-                        "byte size `{value}` exceeds this platform's maximum supported output size"
-                    ))
-                })?);
-                index += 2;
-            }
-            "--unicode" => {
-                if unicode_mode.is_some() {
-                    return Err(CorpusForgeError::invalid_argument(
-                        "duplicate option `--unicode`",
-                    ));
-                }
-                let value = take_value(command, args, index, "--unicode")?;
-                unicode_mode = Some(UnicodeMode::from_str(&value)?);
-                index += 2;
-            }
-            "--output-kind" => {
-                if output_kind.is_some() {
-                    return Err(CorpusForgeError::invalid_argument(
-                        "duplicate option `--output-kind`",
-                    ));
-                }
-                let value = take_value(command, args, index, "--output-kind")?;
-                output_kind = Some(UnicodeOutputKind::from_str(&value)?);
-                index += 2;
-            }
-            "--cases" => {
-                if case_count.is_some() {
-                    return Err(CorpusForgeError::invalid_argument(
-                        "duplicate option `--cases`",
-                    ));
-                }
-                let value = take_value(command, args, index, "--cases")?;
-                case_count = Some(parse_case_count(&value)?);
-                index += 2;
-            }
-            "--out" => {
-                if out.is_some() {
-                    return Err(CorpusForgeError::invalid_argument(
-                        "duplicate option `--out`",
-                    ));
-                }
-                out = Some(take_path_value("gen", args, index, "--out")?);
-                index += 2;
-            }
-            "--metadata-out" => {
-                if metadata_out.is_some() {
-                    return Err(CorpusForgeError::invalid_argument(
-                        "duplicate option `--metadata-out`",
-                    ));
-                }
-                metadata_out = Some(take_path_value("gen", args, index, "--metadata-out")?);
-                index += 2;
-            }
-            "--determinism" => {
-                if determinism_set {
-                    return Err(CorpusForgeError::invalid_argument(
-                        "duplicate option `--determinism`",
-                    ));
-                }
-                let value = take_value(command, args, index, "--determinism")?;
-                determinism = parse_determinism_mode(&value)?;
-                determinism_set = true;
-                index += 2;
-            }
-            "--quiet" => {
-                if quiet {
-                    return Err(CorpusForgeError::invalid_argument(
-                        "duplicate option `--quiet`",
-                    ));
-                }
-                quiet = true;
-                index += 1;
-            }
-            "--json" => {
-                if json {
-                    return Err(CorpusForgeError::invalid_argument(
-                        "duplicate option `--json`",
-                    ));
-                }
-                json = true;
-                index += 1;
-            }
-            "-h" | "--help" => {
-                return Err(CorpusForgeError::invalid_argument(
-                    "help must be requested without other arguments; run `corpusforge gen --help`",
-                ));
-            }
-            other if other.starts_with('-') => {
-                return Err(CorpusForgeError::invalid_argument(format!(
-                    "unknown option `{other}` for `gen`; run `corpusforge gen --help`"
-                )));
-            }
-            other => {
-                return Err(CorpusForgeError::invalid_argument(format!(
-                    "unexpected argument `{other}` for `gen`; run `corpusforge gen --help`"
-                )));
-            }
-        }
+        index += parse_gen_option(command, args, index, flag.as_ref(), &mut state)?;
     }
 
-    let uses_profile_path = profile.is_some() || byte_count.is_some();
-    let uses_unicode_path = unicode_mode.is_some() || output_kind.is_some() || case_count.is_some();
+    finish_gen_options(state)
+}
+
+struct GenOptionState {
+    profile: Option<PathBuf>,
+    seed_source: Option<SeedSource>,
+    byte_count: Option<usize>,
+    unicode_mode: Option<UnicodeMode>,
+    output_kind: Option<UnicodeOutputKind>,
+    case_count: Option<usize>,
+    out: Option<PathBuf>,
+    metadata_out: Option<PathBuf>,
+    determinism: DeterminismMode,
+    determinism_set: bool,
+    quiet: bool,
+    json: bool,
+}
+
+impl GenOptionState {
+    const fn new() -> Self {
+        Self {
+            profile: None,
+            seed_source: None,
+            byte_count: None,
+            unicode_mode: None,
+            output_kind: None,
+            case_count: None,
+            out: None,
+            metadata_out: None,
+            determinism: DeterminismMode::Strict,
+            determinism_set: false,
+            quiet: false,
+            json: false,
+        }
+    }
+}
+
+fn parse_gen_option(
+    command: &CommandSpec,
+    args: &[OsString],
+    index: usize,
+    flag: &str,
+    state: &mut GenOptionState,
+) -> Result<usize> {
+    match flag {
+        "--profile" | "--seed" | "--seed-file" | "--bytes" | "--unicode" | "--output-kind"
+        | "--cases" | "--out" | "--metadata-out" | "--determinism" => {
+            parse_gen_value_option(command, args, index, flag, state)
+        }
+        "--quiet" | "--json" => parse_gen_switch_option(flag, state),
+        "-h" | "--help" => Err(CorpusForgeError::invalid_argument(
+            "help must be requested without other arguments; run `corpusforge gen --help`",
+        )),
+        other if other.starts_with('-') => Err(CorpusForgeError::invalid_argument(format!(
+            "unknown option `{other}` for `gen`; run `corpusforge gen --help`"
+        ))),
+        other => Err(CorpusForgeError::invalid_argument(format!(
+            "unexpected argument `{other}` for `gen`; run `corpusforge gen --help`"
+        ))),
+    }
+}
+
+fn parse_gen_value_option(
+    command: &CommandSpec,
+    args: &[OsString],
+    index: usize,
+    flag: &str,
+    state: &mut GenOptionState,
+) -> Result<usize> {
+    match flag {
+        "--profile" => {
+            state.profile = Some(take_unique_path(&state.profile, "gen", args, index, flag)?)
+        }
+        "--seed" => {
+            state.seed_source = Some(take_inline_seed(
+                command,
+                args,
+                index,
+                flag,
+                &state.seed_source,
+            )?)
+        }
+        "--seed-file" => {
+            state.seed_source = Some(take_file_seed(
+                "gen",
+                args,
+                index,
+                flag,
+                &state.seed_source,
+            )?)
+        }
+        "--bytes" => {
+            state.byte_count = Some(take_byte_count(command, args, index, &state.byte_count)?)
+        }
+        "--unicode" => {
+            state.unicode_mode = Some(take_unicode_mode(
+                command,
+                args,
+                index,
+                &state.unicode_mode,
+            )?)
+        }
+        "--output-kind" => {
+            state.output_kind = Some(take_output_kind(command, args, index, &state.output_kind)?)
+        }
+        "--cases" => {
+            state.case_count = Some(take_case_count(command, args, index, &state.case_count)?)
+        }
+        "--out" => state.out = Some(take_unique_path(&state.out, "gen", args, index, flag)?),
+        "--metadata-out" => {
+            state.metadata_out = Some(take_unique_path(
+                &state.metadata_out,
+                "gen",
+                args,
+                index,
+                flag,
+            )?)
+        }
+        "--determinism" => set_gen_determinism(command, args, index, state)?,
+        _ => unreachable!("gen value option should be prefiltered"),
+    }
+    Ok(2)
+}
+
+fn parse_gen_switch_option(flag: &str, state: &mut GenOptionState) -> Result<usize> {
+    match flag {
+        "--quiet" => claim_switch(&mut state.quiet, flag)?,
+        "--json" => claim_switch(&mut state.json, flag)?,
+        _ => unreachable!("gen switch option should be prefiltered"),
+    }
+    Ok(1)
+}
+
+fn finish_gen_options(state: GenOptionState) -> Result<GenOptions> {
+    let uses_profile_path = state.profile.is_some() || state.byte_count.is_some();
+    let uses_unicode_path =
+        state.unicode_mode.is_some() || state.output_kind.is_some() || state.case_count.is_some();
 
     if uses_profile_path && uses_unicode_path {
         return Err(CorpusForgeError::invalid_argument(
@@ -589,66 +574,54 @@ fn parse_gen_options(args: &[OsString]) -> Result<GenOptions> {
     }
 
     if uses_unicode_path {
-        if json {
-            return Err(CorpusForgeError::invalid_argument(
-                "`--json` is only supported for profile-backed `gen --out`",
-            ));
-        }
-
-        if metadata_out.is_some() {
-            return Err(CorpusForgeError::invalid_argument(
-                "`--metadata-out` is only supported for profile-backed `gen`",
-            ));
-        }
-
-        if determinism_set {
-            return Err(CorpusForgeError::invalid_argument(
-                "`--determinism` is only supported for profile-backed `gen`",
-            ));
-        }
-
-        let mode = unicode_mode.ok_or_else(|| {
-            CorpusForgeError::invalid_argument("missing required option `--unicode` for `gen`")
-        })?;
-        let output_kind = output_kind.ok_or_else(|| {
-            CorpusForgeError::invalid_argument("missing required option `--output-kind` for `gen`")
-        })?;
-        let case_count = case_count.ok_or_else(|| {
-            CorpusForgeError::invalid_argument("missing required option `--cases` for `gen`")
-        })?;
-        let seed_source = seed_source.ok_or_else(|| {
-            CorpusForgeError::invalid_argument(
-                "missing required seed source for `gen`; use exactly one of `--seed` or `--seed-file`",
-            )
-        })?;
-
-        TokenizerCaseSpec::new(mode, output_kind, case_count)?;
-
-        return Ok(GenOptions::Unicode(UnicodeGenOptions {
-            mode,
-            output_kind,
-            case_count,
-            seed_source,
-            out,
-            quiet,
-        }));
+        return finish_unicode_gen_options(state);
     }
 
-    if json && out.is_none() {
+    finish_profile_gen_options(state)
+}
+
+fn finish_unicode_gen_options(state: GenOptionState) -> Result<GenOptions> {
+    reject_profile_only_gen_options(
+        state.json,
+        state.metadata_out.as_ref(),
+        state.determinism_set,
+    )?;
+
+    let mode = state.unicode_mode.ok_or_else(|| {
+        CorpusForgeError::invalid_argument("missing required option `--unicode` for `gen`")
+    })?;
+    let output_kind = state.output_kind.ok_or_else(|| {
+        CorpusForgeError::invalid_argument("missing required option `--output-kind` for `gen`")
+    })?;
+    let case_count = state.case_count.ok_or_else(|| {
+        CorpusForgeError::invalid_argument("missing required option `--cases` for `gen`")
+    })?;
+    let seed_source = require_seed_source(state.seed_source, "gen")?;
+
+    TokenizerCaseSpec::new(mode, output_kind, case_count)?;
+
+    Ok(GenOptions::Unicode(UnicodeGenOptions {
+        mode,
+        output_kind,
+        case_count,
+        seed_source,
+        out: state.out,
+        quiet: state.quiet,
+    }))
+}
+
+fn finish_profile_gen_options(state: GenOptionState) -> Result<GenOptions> {
+    if state.json && state.out.is_none() {
         return Err(CorpusForgeError::invalid_argument(
             "`--json` requires `--out` for `gen` because standard output carries generated binary bytes",
         ));
     }
 
-    let profile = profile.ok_or_else(|| {
+    let profile = state.profile.ok_or_else(|| {
         CorpusForgeError::invalid_argument("missing required option `--profile` for `gen`")
     })?;
-    let seed_source = seed_source.ok_or_else(|| {
-        CorpusForgeError::invalid_argument(
-            "missing required seed source for `gen`; use exactly one of `--seed` or `--seed-file`",
-        )
-    })?;
-    let byte_count = byte_count.ok_or_else(|| {
+    let seed_source = require_seed_source(state.seed_source, "gen")?;
+    let byte_count = state.byte_count.ok_or_else(|| {
         CorpusForgeError::invalid_argument("missing required option `--bytes` for `gen`")
     })?;
 
@@ -656,140 +629,133 @@ fn parse_gen_options(args: &[OsString]) -> Result<GenOptions> {
         profile,
         seed_source,
         byte_count,
-        out,
-        metadata_out,
-        determinism,
-        quiet,
-        json,
+        out: state.out,
+        metadata_out: state.metadata_out,
+        determinism: state.determinism,
+        quiet: state.quiet,
+        json: state.json,
     }))
 }
 
 fn parse_ci_tokenizer_options(args: &[OsString]) -> Result<CiTokenizerOptions> {
     let command_spec = find_command("ci").expect("ci command should exist");
-    let mut unicode_mode = None;
-    let mut output_kind = None;
-    let mut case_count = None;
-    let mut seed_source = None;
-    let mut command = None;
-    let mut harness_args = Vec::new();
-    let mut report_out = None;
+    let mut state = CiTokenizerOptionState::default();
     let mut index = 0;
 
     while index < args.len() {
         let flag = args[index].to_string_lossy();
-
-        match flag.as_ref() {
-            "--unicode" => {
-                if unicode_mode.is_some() {
-                    return Err(CorpusForgeError::invalid_argument(
-                        "duplicate option `--unicode`",
-                    ));
-                }
-                let value = take_value(command_spec, args, index, "--unicode")?;
-                unicode_mode = Some(UnicodeMode::from_str(&value)?);
-                index += 2;
-            }
-            "--output-kind" => {
-                if output_kind.is_some() {
-                    return Err(CorpusForgeError::invalid_argument(
-                        "duplicate option `--output-kind`",
-                    ));
-                }
-                let value = take_value(command_spec, args, index, "--output-kind")?;
-                output_kind = Some(UnicodeOutputKind::from_str(&value)?);
-                index += 2;
-            }
-            "--cases" => {
-                if case_count.is_some() {
-                    return Err(CorpusForgeError::invalid_argument(
-                        "duplicate option `--cases`",
-                    ));
-                }
-                let value = take_value(command_spec, args, index, "--cases")?;
-                case_count = Some(parse_case_count(&value)?);
-                index += 2;
-            }
-            "--seed" => {
-                if let Some(existing) = seed_source_name(&seed_source) {
-                    return Err(seed_conflict("--seed", existing));
-                }
-                let seed = take_value(command_spec, args, index, "--seed")?;
-                validate_non_empty(&seed, "--seed")?;
-                seed_source = Some(SeedSource::Inline(seed));
-                index += 2;
-            }
-            "--seed-file" => {
-                if let Some(existing) = seed_source_name(&seed_source) {
-                    return Err(seed_conflict("--seed-file", existing));
-                }
-                seed_source = Some(SeedSource::File(take_path_value(
-                    "ci",
-                    args,
-                    index,
-                    "--seed-file",
-                )?));
-                index += 2;
-            }
-            "--command" => {
-                if command.is_some() {
-                    return Err(CorpusForgeError::invalid_argument(
-                        "duplicate option `--command`",
-                    ));
-                }
-                command = Some(take_path_value("ci", args, index, "--command")?);
-                index += 2;
-            }
-            "--arg" => {
-                harness_args.push(take_raw_string_value("ci", args, index, "--arg")?);
-                index += 2;
-            }
-            "--report-out" => {
-                if report_out.is_some() {
-                    return Err(CorpusForgeError::invalid_argument(
-                        "duplicate option `--report-out`",
-                    ));
-                }
-                report_out = Some(take_path_value("ci", args, index, "--report-out")?);
-                index += 2;
-            }
-            "-h" | "--help" => {
-                return Err(CorpusForgeError::invalid_argument(
-                    "help must be requested without other arguments; run `corpusforge ci --help`",
-                ));
-            }
-            other if other.starts_with('-') => {
-                return Err(CorpusForgeError::invalid_argument(format!(
-                    "unknown option `{other}` for `ci tokenizer`; run `corpusforge ci --help`"
-                )));
-            }
-            other => {
-                return Err(CorpusForgeError::invalid_argument(format!(
-                    "unexpected argument `{other}` for `ci tokenizer`; run `corpusforge ci --help`"
-                )));
-            }
-        }
+        index += parse_ci_tokenizer_option(command_spec, args, index, flag.as_ref(), &mut state)?;
     }
 
-    let mode = unicode_mode.ok_or_else(|| {
+    finish_ci_tokenizer_options(state)
+}
+
+#[derive(Default)]
+struct CiTokenizerOptionState {
+    unicode_mode: Option<UnicodeMode>,
+    output_kind: Option<UnicodeOutputKind>,
+    case_count: Option<usize>,
+    seed_source: Option<SeedSource>,
+    command: Option<PathBuf>,
+    harness_args: Vec<String>,
+    report_out: Option<PathBuf>,
+}
+
+fn parse_ci_tokenizer_option(
+    command_spec: &CommandSpec,
+    args: &[OsString],
+    index: usize,
+    flag: &str,
+    state: &mut CiTokenizerOptionState,
+) -> Result<usize> {
+    match flag {
+        "--unicode" => {
+            state.unicode_mode = Some(take_unicode_mode(
+                command_spec,
+                args,
+                index,
+                &state.unicode_mode,
+            )?)
+        }
+        "--output-kind" => {
+            state.output_kind = Some(take_output_kind(
+                command_spec,
+                args,
+                index,
+                &state.output_kind,
+            )?)
+        }
+        "--cases" => {
+            state.case_count = Some(take_case_count(
+                command_spec,
+                args,
+                index,
+                &state.case_count,
+            )?)
+        }
+        "--seed" => {
+            state.seed_source = Some(take_inline_seed(
+                command_spec,
+                args,
+                index,
+                flag,
+                &state.seed_source,
+            )?)
+        }
+        "--seed-file" => {
+            state.seed_source = Some(take_file_seed("ci", args, index, flag, &state.seed_source)?)
+        }
+        "--command" => {
+            state.command = Some(take_unique_path(&state.command, "ci", args, index, flag)?)
+        }
+        "--arg" => state
+            .harness_args
+            .push(take_raw_string_value("ci", args, index, "--arg")?),
+        "--report-out" => {
+            state.report_out = Some(take_unique_path(
+                &state.report_out,
+                "ci",
+                args,
+                index,
+                flag,
+            )?)
+        }
+        "-h" | "--help" => {
+            return Err(CorpusForgeError::invalid_argument(
+                "help must be requested without other arguments; run `corpusforge ci --help`",
+            ))
+        }
+        other if other.starts_with('-') => {
+            return Err(CorpusForgeError::invalid_argument(format!(
+                "unknown option `{other}` for `ci tokenizer`; run `corpusforge ci --help`"
+            )));
+        }
+        other => {
+            return Err(CorpusForgeError::invalid_argument(format!(
+                "unexpected argument `{other}` for `ci tokenizer`; run `corpusforge ci --help`"
+            )));
+        }
+    }
+    Ok(2)
+}
+
+fn finish_ci_tokenizer_options(state: CiTokenizerOptionState) -> Result<CiTokenizerOptions> {
+    let mode = state.unicode_mode.ok_or_else(|| {
         CorpusForgeError::invalid_argument("missing required option `--unicode` for `ci tokenizer`")
     })?;
-    let output_kind = output_kind.ok_or_else(|| {
+    let output_kind = state.output_kind.ok_or_else(|| {
         CorpusForgeError::invalid_argument(
             "missing required option `--output-kind` for `ci tokenizer`",
         )
     })?;
-    let case_count = case_count.ok_or_else(|| {
+    let case_count = state.case_count.ok_or_else(|| {
         CorpusForgeError::invalid_argument("missing required option `--cases` for `ci tokenizer`")
     })?;
-    let seed_source = seed_source.ok_or_else(|| {
-        CorpusForgeError::invalid_argument(
-            "missing required seed source for `ci tokenizer`; use exactly one of `--seed` or `--seed-file`",
-        )
-    })?;
-    let command = command.ok_or_else(|| {
+    let seed_source = require_seed_source(state.seed_source, "ci tokenizer")?;
+    let command = state.command.ok_or_else(|| {
         CorpusForgeError::invalid_argument("missing required option `--command` for `ci tokenizer`")
     })?;
-    let report_out = report_out.ok_or_else(|| {
+    let report_out = state.report_out.ok_or_else(|| {
         CorpusForgeError::invalid_argument(
             "missing required option `--report-out` for `ci tokenizer`",
         )
@@ -803,8 +769,172 @@ fn parse_ci_tokenizer_options(args: &[OsString]) -> Result<CiTokenizerOptions> {
         case_count,
         seed_source,
         command,
-        args: harness_args,
+        args: state.harness_args,
         report_out,
+    })
+}
+
+fn reject_profile_only_gen_options(
+    json: bool,
+    metadata_out: Option<&PathBuf>,
+    determinism_set: bool,
+) -> Result<()> {
+    if json {
+        return Err(CorpusForgeError::invalid_argument(
+            "`--json` is only supported for profile-backed `gen --out`",
+        ));
+    }
+
+    if metadata_out.is_some() {
+        return Err(CorpusForgeError::invalid_argument(
+            "`--metadata-out` is only supported for profile-backed `gen`",
+        ));
+    }
+
+    if determinism_set {
+        return Err(CorpusForgeError::invalid_argument(
+            "`--determinism` is only supported for profile-backed `gen`",
+        ));
+    }
+
+    Ok(())
+}
+
+fn take_unique_path(
+    current: &Option<PathBuf>,
+    command: &str,
+    args: &[OsString],
+    index: usize,
+    flag: &str,
+) -> Result<PathBuf> {
+    reject_duplicate(current, flag)?;
+    take_path_value(command, args, index, flag)
+}
+
+fn take_inline_seed(
+    command: &CommandSpec,
+    args: &[OsString],
+    index: usize,
+    flag: &str,
+    current: &Option<SeedSource>,
+) -> Result<SeedSource> {
+    reject_seed_conflict(current, flag)?;
+    let seed = take_value(command, args, index, flag)?;
+    validate_non_empty(&seed, flag)?;
+    Ok(SeedSource::Inline(seed))
+}
+
+fn take_file_seed(
+    command: &str,
+    args: &[OsString],
+    index: usize,
+    flag: &str,
+    current: &Option<SeedSource>,
+) -> Result<SeedSource> {
+    reject_seed_conflict(current, flag)?;
+    Ok(SeedSource::File(take_path_value(
+        command, args, index, flag,
+    )?))
+}
+
+fn take_byte_count(
+    command: &CommandSpec,
+    args: &[OsString],
+    index: usize,
+    current: &Option<usize>,
+) -> Result<usize> {
+    reject_duplicate(current, "--bytes")?;
+    let value = take_value(command, args, index, "--bytes")?;
+    let bytes = parse_byte_size(&value)?;
+    usize::try_from(bytes).map_err(|_| {
+        CorpusForgeError::invalid_argument(format!(
+            "byte size `{value}` exceeds this platform's maximum supported output size"
+        ))
+    })
+}
+
+fn take_unicode_mode(
+    command: &CommandSpec,
+    args: &[OsString],
+    index: usize,
+    current: &Option<UnicodeMode>,
+) -> Result<UnicodeMode> {
+    reject_duplicate(current, "--unicode")?;
+    let value = take_value(command, args, index, "--unicode")?;
+    UnicodeMode::from_str(&value)
+}
+
+fn take_output_kind(
+    command: &CommandSpec,
+    args: &[OsString],
+    index: usize,
+    current: &Option<UnicodeOutputKind>,
+) -> Result<UnicodeOutputKind> {
+    reject_duplicate(current, "--output-kind")?;
+    let value = take_value(command, args, index, "--output-kind")?;
+    UnicodeOutputKind::from_str(&value)
+}
+
+fn take_case_count(
+    command: &CommandSpec,
+    args: &[OsString],
+    index: usize,
+    current: &Option<usize>,
+) -> Result<usize> {
+    reject_duplicate(current, "--cases")?;
+    let value = take_value(command, args, index, "--cases")?;
+    parse_case_count(&value)
+}
+
+fn set_gen_determinism(
+    command: &CommandSpec,
+    args: &[OsString],
+    index: usize,
+    state: &mut GenOptionState,
+) -> Result<()> {
+    if state.determinism_set {
+        return Err(CorpusForgeError::invalid_argument(
+            "duplicate option `--determinism`",
+        ));
+    }
+
+    let value = take_value(command, args, index, "--determinism")?;
+    state.determinism = parse_determinism_mode(&value)?;
+    state.determinism_set = true;
+    Ok(())
+}
+
+fn reject_duplicate<T>(current: &Option<T>, flag: &str) -> Result<()> {
+    if current.is_some() {
+        return Err(CorpusForgeError::invalid_argument(format!(
+            "duplicate option `{flag}`"
+        )));
+    }
+    Ok(())
+}
+
+fn claim_switch(current: &mut bool, flag: &str) -> Result<()> {
+    if *current {
+        return Err(CorpusForgeError::invalid_argument(format!(
+            "duplicate option `{flag}`"
+        )));
+    }
+    *current = true;
+    Ok(())
+}
+
+fn reject_seed_conflict(current: &Option<SeedSource>, flag: &str) -> Result<()> {
+    if let Some(existing) = seed_source_name(current) {
+        return Err(seed_conflict(flag, existing));
+    }
+    Ok(())
+}
+
+fn require_seed_source(seed_source: Option<SeedSource>, command: &str) -> Result<SeedSource> {
+    seed_source.ok_or_else(|| {
+        CorpusForgeError::invalid_argument(format!(
+            "missing required seed source for `{command}`; use exactly one of `--seed` or `--seed-file`",
+        ))
     })
 }
 
@@ -816,7 +946,7 @@ fn seed_source_name(seed_source: &Option<SeedSource>) -> Option<&'static str> {
     }
 }
 
-fn seed_conflict(flag: &'static str, existing: &'static str) -> CorpusForgeError {
+fn seed_conflict(flag: &str, existing: &str) -> CorpusForgeError {
     CorpusForgeError::invalid_argument(format!("seed input `{flag}` conflicts with `{existing}`"))
 }
 
