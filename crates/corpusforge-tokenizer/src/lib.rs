@@ -6,7 +6,7 @@ use corpusforge_core::seed::MasterSeed;
 use corpusforge_core::Result;
 use corpusforge_unicode::{generate_raw_bytes, generate_valid_text, UnicodeFixtureSpec};
 pub use corpusforge_unicode::{UnicodeMode, UnicodeOutputKind};
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -259,7 +259,11 @@ fn run_one_sample(
         .map_err(|_| ())?;
 
     let mut stdin = child.stdin.take().ok_or(())?;
-    stdin.write_all(case.bytes()).map_err(|_| ())?;
+    if let Err(error) = stdin.write_all(case.bytes()) {
+        if error.kind() != ErrorKind::BrokenPipe {
+            return Err(());
+        }
+    }
     drop(stdin);
 
     let status = child.wait().map_err(|_| ())?;
@@ -453,6 +457,17 @@ mod tests {
     }
 
     #[test]
+    fn stdin_harness_passes_when_helper_exits_zero_without_reading_stdin() {
+        let command = test_harness_command("tests::stdin_helper_exits_zero_without_reading_stdin");
+        let cases = vec![TokenizerCase::new(0, vec![b'x'; 1_048_576])];
+
+        let run = run_stdin_harness(&command, &cases);
+
+        assert_eq!(run.status(), HarnessStatus::Passed);
+        assert!(run.failure_sample().is_none());
+    }
+
+    #[test]
     fn stdin_harness_reports_first_nonzero_exit() {
         let command = test_harness_command("tests::stdin_helper_rejects_fail_input");
         let cases = vec![
@@ -557,6 +572,10 @@ mod tests {
 
         assert!(!input.is_empty());
     }
+
+    #[test]
+    #[ignore]
+    fn stdin_helper_exits_zero_without_reading_stdin() {}
 
     #[test]
     #[ignore]
