@@ -4,7 +4,7 @@
 
 use corpusforge_core::rng::{DeterministicStream, DOMAIN_UNICODE};
 use corpusforge_core::seed::MasterSeed;
-use corpusforge_core::{CorpusForgeError, Result};
+use corpusforge_core::{stable_labels, CorpusForgeError, Result};
 use std::fmt::{self, Display, Formatter};
 use std::str::FromStr;
 
@@ -336,14 +336,6 @@ fn sample_mixed_raw_byte_fixture(
 fn sample_invalid_utf8_fixture(stream: &mut DeterministicStream) -> Result<&'static [u8]> {
     let fixture_index = stream.usize_below(INVALID_UTF8_FIXTURES.len())?;
     Ok(INVALID_UTF8_FIXTURES[fixture_index])
-}
-
-fn stable_labels<T: Copy + Display, const N: usize>(items: &[T; N]) -> String {
-    items
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 #[cfg(test)]

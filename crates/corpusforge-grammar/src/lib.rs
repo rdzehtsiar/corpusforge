@@ -7,7 +7,7 @@ use std::str::FromStr;
 
 use corpusforge_core::rng::{DeterministicStream, DOMAIN_GRAMMAR};
 use corpusforge_core::seed::MasterSeed;
-use corpusforge_core::{CorpusForgeError, Result};
+use corpusforge_core::{stable_labels, CorpusForgeError, Result};
 use corpusforge_unicode::{generate_valid_text, UnicodeMode};
 
 /// Grammar fixture format.
@@ -270,9 +270,7 @@ enum JsonTemplate {
 }
 
 fn stream_context(spec: GrammarCaseSpec) -> String {
-    let unicode_label = spec
-        .unicode_mode
-        .map_or("none", corpusforge_unicode::UnicodeMode::label);
+    let unicode_label = spec.unicode_mode.map_or("none", UnicodeMode::label);
 
     format!(
         "grammar/v1/{}/{}/unicode={unicode_label}",
@@ -455,14 +453,6 @@ fn hex_digit(value: u8) -> char {
         10..=15 => char::from(b'a' + ((value & 0x0f) - 10)),
         _ => unreachable!("masked nibble is always in range"),
     }
-}
-
-fn stable_labels<T: Copy + Display, const N: usize>(items: &[T; N]) -> String {
-    items
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 #[cfg(test)]
@@ -759,7 +749,7 @@ mod tests {
             Self { text, offset: 0 }
         }
 
-        fn finish(&mut self) -> std::result::Result<(), String> {
+        fn finish(&mut self) -> Result<(), String> {
             self.skip_whitespace();
 
             if self.offset == self.text.len() {
@@ -769,7 +759,7 @@ mod tests {
             }
         }
 
-        fn parse_value(&mut self) -> std::result::Result<(), String> {
+        fn parse_value(&mut self) -> Result<(), String> {
             self.skip_whitespace();
 
             match self.peek() {
@@ -788,7 +778,7 @@ mod tests {
             }
         }
 
-        fn parse_object(&mut self) -> std::result::Result<(), String> {
+        fn parse_object(&mut self) -> Result<(), String> {
             self.expect('{')?;
             self.skip_whitespace();
 
@@ -812,7 +802,7 @@ mod tests {
             }
         }
 
-        fn parse_array(&mut self) -> std::result::Result<(), String> {
+        fn parse_array(&mut self) -> Result<(), String> {
             self.expect('[')?;
             self.skip_whitespace();
 
@@ -832,7 +822,7 @@ mod tests {
             }
         }
 
-        fn parse_string(&mut self) -> std::result::Result<String, String> {
+        fn parse_string(&mut self) -> Result<String, String> {
             self.expect('"')?;
             let mut value = String::new();
 
@@ -855,7 +845,7 @@ mod tests {
             }
         }
 
-        fn parse_escape(&mut self) -> std::result::Result<char, String> {
+        fn parse_escape(&mut self) -> Result<char, String> {
             match self.next() {
                 Some(character @ ('"' | '\\' | '/')) => Ok(character),
                 Some('b') => Ok('\u{08}'),
@@ -869,7 +859,7 @@ mod tests {
             }
         }
 
-        fn parse_unicode_escape(&mut self) -> std::result::Result<char, String> {
+        fn parse_unicode_escape(&mut self) -> Result<char, String> {
             let mut value = 0_u32;
 
             for _ in 0..4 {
@@ -885,7 +875,7 @@ mod tests {
             char::from_u32(value).ok_or_else(|| format!("invalid unicode scalar U+{value:04X}"))
         }
 
-        fn parse_number(&mut self) -> std::result::Result<(), String> {
+        fn parse_number(&mut self) -> Result<(), String> {
             self.consume_if('-');
 
             match self.peek() {
@@ -914,7 +904,7 @@ mod tests {
             Ok(())
         }
 
-        fn consume_digits(&mut self, name: &str) -> std::result::Result<(), String> {
+        fn consume_digits(&mut self, name: &str) -> Result<(), String> {
             if !matches!(self.peek(), Some('0'..='9')) {
                 return Err(format!("missing {name} digit at byte {}", self.offset));
             }
@@ -926,7 +916,7 @@ mod tests {
             Ok(())
         }
 
-        fn consume_literal(&mut self, literal: &str) -> std::result::Result<(), String> {
+        fn consume_literal(&mut self, literal: &str) -> Result<(), String> {
             if self.text[self.offset..].starts_with(literal) {
                 self.offset += literal.len();
                 Ok(())
@@ -935,7 +925,7 @@ mod tests {
             }
         }
 
-        fn expect(&mut self, expected: char) -> std::result::Result<(), String> {
+        fn expect(&mut self, expected: char) -> Result<(), String> {
             match self.next() {
                 Some(actual) if actual == expected => Ok(()),
                 Some(actual) => Err(format!(

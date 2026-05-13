@@ -17,6 +17,15 @@ use std::fmt::{self, Display, Formatter};
 /// Project-wide result type used by CorpusForge crates.
 pub type Result<T> = std::result::Result<T, CorpusForgeError>;
 
+/// Formats stable display labels for diagnostics and error messages.
+pub fn stable_labels<T: Copy + Display, const N: usize>(items: &[T; N]) -> String {
+    items
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Project-wide error categories with actionable diagnostics.
 #[derive(Debug)]
 pub enum CorpusForgeError {
@@ -145,7 +154,7 @@ impl From<std::io::Error> for CorpusForgeError {
 
 #[cfg(test)]
 mod tests {
-    use super::{CorpusForgeError, Result};
+    use super::{stable_labels, CorpusForgeError, Result};
     use std::error::Error;
     use std::io;
 
@@ -212,5 +221,13 @@ mod tests {
 
         let error = fail().expect_err("result should use CorpusForgeError");
         assert_eq!(error.category(), "not_implemented");
+    }
+
+    #[test]
+    fn stable_labels_joins_display_values_in_input_order() {
+        assert_eq!(
+            stable_labels(&["alpha", "beta", "gamma"]),
+            "alpha, beta, gamma"
+        );
     }
 }
