@@ -6,6 +6,9 @@ use corpusforge_cff::{InspectSummary, ProfilePack};
 use corpusforge_core::output::ByteRangeWriter;
 use corpusforge_core::seed::MasterSeed;
 use corpusforge_core::{CorpusForgeError, Result};
+use corpusforge_grammar::{
+    generate_grammar_cases, GrammarCase, GrammarCaseSpec, GrammarFormat, GrammarMode,
+};
 use corpusforge_ngram::{ByteBigramModel, ENGINE_NAME, ENGINE_VERSION};
 use corpusforge_profile::compile_path;
 use corpusforge_shrink::{
@@ -113,6 +116,7 @@ struct ProfileFileOptions {
 enum GenOptions {
     Profile(ProfileGenOptions),
     Unicode(UnicodeGenOptions),
+    Grammar(GrammarGenOptions),
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -131,6 +135,17 @@ struct ProfileGenOptions {
 struct UnicodeGenOptions {
     mode: UnicodeMode,
     output_kind: UnicodeOutputKind,
+    case_count: usize,
+    seed_source: SeedSource,
+    out: Option<PathBuf>,
+    quiet: bool,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct GrammarGenOptions {
+    format: GrammarFormat,
+    mode: GrammarMode,
+    unicode_mode: Option<UnicodeMode>,
     case_count: usize,
     seed_source: SeedSource,
     out: Option<PathBuf>,
@@ -489,6 +504,8 @@ struct GenOptionState {
     byte_count: Option<usize>,
     unicode_mode: Option<UnicodeMode>,
     output_kind: Option<UnicodeOutputKind>,
+    grammar_format: Option<GrammarFormat>,
+    grammar_mode: Option<GrammarMode>,
     case_count: Option<usize>,
     out: Option<PathBuf>,
     metadata_out: Option<PathBuf>,
@@ -506,6 +523,8 @@ impl GenOptionState {
             byte_count: None,
             unicode_mode: None,
             output_kind: None,
+            grammar_format: None,
+            grammar_mode: None,
             case_count: None,
             out: None,
             metadata_out: None,
@@ -526,9 +545,8 @@ fn parse_gen_option(
 ) -> Result<usize> {
     match flag {
         "--profile" | "--seed" | "--seed-file" | "--bytes" | "--unicode" | "--output-kind"
-        | "--cases" | "--out" | "--metadata-out" | "--determinism" => {
-            parse_gen_value_option(command, args, index, flag, state)
-        }
+        | "--grammar" | "--grammar-mode" | "--cases" | "--out" | "--metadata-out"
+        | "--determinism" => parse_gen_value_option(command, args, index, flag, state),
         "--quiet" | "--json" => parse_gen_switch_option(flag, state),
         "-h" | "--help" => Err(CorpusForgeError::invalid_argument(
             "help must be requested without other arguments; run `corpusforge gen --help`",
@@ -585,6 +603,22 @@ fn parse_gen_value_option(
         "--output-kind" => {
             state.output_kind = Some(take_output_kind(command, args, index, &state.output_kind)?)
         }
+        "--grammar" => {
+            state.grammar_format = Some(take_grammar_format(
+                command,
+                args,
+                index,
+                &state.grammar_format,
+            )?)
+        }
+        "--grammar-mode" => {
+            state.grammar_mode = Some(take_grammar_mode(
+                command,
+                args,
+                index,
+                &state.grammar_mode,
+            )?)
+        }
         "--cases" => {
             state.case_count = Some(take_case_count(command, args, index, &state.case_count)?)
         }
@@ -615,16 +649,28 @@ fn parse_gen_switch_option(flag: &str, state: &mut GenOptionState) -> Result<usi
 
 fn finish_gen_options(state: GenOptionState) -> Result<GenOptions> {
     let uses_profile_path = state.profile.is_some() || state.byte_count.is_some();
-    let uses_unicode_path =
-        state.unicode_mode.is_some() || state.output_kind.is_some() || state.case_count.is_some();
+    let uses_grammar_path = state.grammar_format.is_some() || state.grammar_mode.is_some();
+    let uses_unicode_only_path = state.output_kind.is_some()
+        || (state.unicode_mode.is_some() && !uses_grammar_path)
+        || (state.case_count.is_some() && !uses_grammar_path);
 
-    if uses_profile_path && uses_unicode_path {
+    if uses_profile_path && (uses_unicode_only_path || uses_grammar_path) {
         return Err(CorpusForgeError::invalid_argument(
-            "`gen` profile/bytes options cannot be mixed with `--unicode`, `--output-kind`, or `--cases`",
+            "`gen` profile/bytes options cannot be mixed with Unicode-only or grammar generation options",
         ));
     }
 
-    if uses_unicode_path {
+    if uses_grammar_path && state.output_kind.is_some() {
+        return Err(CorpusForgeError::invalid_argument(
+            "`gen` grammar options cannot be mixed with Unicode-only `--output-kind`",
+        ));
+    }
+
+    if uses_grammar_path {
+        return finish_grammar_gen_options(state);
+    }
+
+    if uses_unicode_only_path {
         return finish_unicode_gen_options(state);
     }
 
@@ -654,6 +700,37 @@ fn finish_unicode_gen_options(state: GenOptionState) -> Result<GenOptions> {
     Ok(GenOptions::Unicode(UnicodeGenOptions {
         mode,
         output_kind,
+        case_count,
+        seed_source,
+        out: state.out,
+        quiet: state.quiet,
+    }))
+}
+
+fn finish_grammar_gen_options(state: GenOptionState) -> Result<GenOptions> {
+    reject_profile_only_gen_options(
+        state.json,
+        state.metadata_out.as_ref(),
+        state.determinism_set,
+    )?;
+
+    let format = state.grammar_format.ok_or_else(|| {
+        CorpusForgeError::invalid_argument("missing required option `--grammar` for `gen`")
+    })?;
+    let mode = state.grammar_mode.ok_or_else(|| {
+        CorpusForgeError::invalid_argument("missing required option `--grammar-mode` for `gen`")
+    })?;
+    let case_count = state.case_count.ok_or_else(|| {
+        CorpusForgeError::invalid_argument("missing required option `--cases` for `gen`")
+    })?;
+    let seed_source = require_seed_source(state.seed_source, "gen")?;
+
+    GrammarCaseSpec::new(format, mode, case_count, state.unicode_mode)?;
+
+    Ok(GenOptions::Grammar(GrammarGenOptions {
+        format,
+        mode,
+        unicode_mode: state.unicode_mode,
         case_count,
         seed_source,
         out: state.out,
@@ -1200,6 +1277,28 @@ fn take_output_kind(
     UnicodeOutputKind::from_str(&value)
 }
 
+fn take_grammar_format(
+    command: &CommandSpec,
+    args: &[OsString],
+    index: usize,
+    current: &Option<GrammarFormat>,
+) -> Result<GrammarFormat> {
+    reject_duplicate(current, "--grammar")?;
+    let value = take_value(command, args, index, "--grammar")?;
+    GrammarFormat::from_str(&value)
+}
+
+fn take_grammar_mode(
+    command: &CommandSpec,
+    args: &[OsString],
+    index: usize,
+    current: &Option<GrammarMode>,
+) -> Result<GrammarMode> {
+    reject_duplicate(current, "--grammar-mode")?;
+    let value = take_value(command, args, index, "--grammar-mode")?;
+    GrammarMode::from_str(&value)
+}
+
 fn take_case_count(
     command: &CommandSpec,
     args: &[OsString],
@@ -1402,6 +1501,7 @@ fn execute_gen(options: GenOptions, stdout: &mut impl Write) -> Result<Option<St
     match options {
         GenOptions::Profile(options) => execute_profile_gen(options, stdout),
         GenOptions::Unicode(options) => execute_unicode_gen(options, stdout),
+        GenOptions::Grammar(options) => execute_grammar_gen(options, stdout),
     }
 }
 
@@ -1537,6 +1637,52 @@ fn join_tokenizer_cases(cases: &[corpusforge_tokenizer::TokenizerCase]) -> Vec<u
     bytes
 }
 
+fn execute_grammar_gen(
+    options: GrammarGenOptions,
+    stdout: &mut impl Write,
+) -> Result<Option<String>> {
+    let seed = read_seed(&options.seed_source)?;
+    let spec = GrammarCaseSpec::new(
+        options.format,
+        options.mode,
+        options.case_count,
+        options.unicode_mode,
+    )?;
+    let cases = generate_grammar_cases(&seed, spec)?;
+    let bytes = join_grammar_cases(&cases);
+
+    if let Some(out) = &options.out {
+        let mut file = File::create(out)?;
+        file.write_all(&bytes)?;
+        file.flush()?;
+    } else {
+        stdout.write_all(&bytes)?;
+    }
+
+    if options.out.is_none() || options.quiet {
+        return Ok(None);
+    }
+
+    Ok(Some(format_grammar_gen_summary(
+        &options,
+        &seed,
+        bytes.len(),
+    )))
+}
+
+fn join_grammar_cases(cases: &[GrammarCase]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+
+    for (index, case) in cases.iter().enumerate() {
+        if index > 0 {
+            bytes.push(b'\n');
+        }
+        bytes.extend_from_slice(case.text().as_bytes());
+    }
+
+    bytes
+}
+
 fn execute_shrink(options: ShrinkOptions) -> Result<String> {
     let input = fs::read(&options.input)?;
     let predicate =
@@ -1645,6 +1791,29 @@ fn format_unicode_gen_summary(
         "generated unicode corpus\nseed: {seed}\nunicode_mode: {mode}\noutput_kind: {output_kind}\ncase_count: {case_count}\nbyte_count: {byte_count}\nout: {out}",
         mode = options.mode,
         output_kind = options.output_kind,
+        case_count = options.case_count
+    )
+}
+
+fn format_grammar_gen_summary(
+    options: &GrammarGenOptions,
+    seed: &MasterSeed,
+    byte_count: usize,
+) -> String {
+    let out = options
+        .out
+        .as_ref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "stdout".to_owned());
+    let unicode_mode = options
+        .unicode_mode
+        .map(|mode| mode.to_string())
+        .unwrap_or_else(|| "none".to_owned());
+
+    format!(
+        "generated grammar corpus\nseed: {seed}\ngrammar: {format}\ngrammar_mode: {mode}\nunicode_mode: {unicode_mode}\ncase_count: {case_count}\nbyte_count: {byte_count}\nout: {out}",
+        format = options.format,
+        mode = options.mode,
         case_count = options.case_count
     )
 }
@@ -2272,7 +2441,7 @@ fn ci_help(command: &CommandSpec) -> String {
 
 fn gen_help(command: &CommandSpec) -> String {
     format!(
-        "corpusforge {name}\n\n{summary}\n\nUSAGE:\n    corpusforge gen --profile <path> (--seed <seed> | --seed-file <path>) --bytes <N> [OPTIONS]\n    corpusforge gen --unicode <mode> --output-kind <valid-text|raw-bytes> --cases <N> (--seed <seed> | --seed-file <path>) [--out <path>] [--quiet]\n\nOPTIONS:\n    --profile <path>              Read a CorpusForge .cff profile with an embedded n-gram model\n    --unicode <mode>              Generate built-in tokenizer Unicode stress cases\n    --output-kind <kind>          Unicode output boundary: valid-text or raw-bytes\n    --cases <N>                   Number of Unicode tokenizer cases to generate\n    --seed <seed>                 Use an inline deterministic seed\n    --seed-file <path>            Read the deterministic seed from a 32-byte file\n    --bytes <N>                   Set profile-backed output size in bytes; supports KB, MB, GB\n    --out <path>                  Stream generated bytes to a file instead of stdout\n    --determinism <mode>          Profile-backed determinism mode: strict or relaxed\n    --metadata-out <path>         Write profile-backed stable generation metadata JSON to a path\n    --quiet                       Suppress human-readable output when --out is used\n    --json                        Emit profile-backed JSON summary when --out is used\n    -h, --help                    Print help\n\nUNICODE MODES:\n    grapheme, bidi, zero-width, emoji, normalization, mixed, invalid-utf8\n\nSTDOUT:\n    Without --out, generated binary bytes are written directly to stdout without an added trailing newline. Use --out before --json.",
+        "corpusforge {name}\n\n{summary}\n\nUSAGE:\n    corpusforge gen --profile <path> (--seed <seed> | --seed-file <path>) --bytes <N> [OPTIONS]\n    corpusforge gen --unicode <mode> --output-kind <valid-text|raw-bytes> --cases <N> (--seed <seed> | --seed-file <path>) [--out <path>] [--quiet]\n    corpusforge gen --grammar <markdown|json> --grammar-mode <valid|near-valid|malformed> --cases <N> (--seed <seed> | --seed-file <path>) [--unicode <mode>] [--out <path>] [--quiet]\n\nOPTIONS:\n    --profile <path>              Read a CorpusForge .cff profile with an embedded n-gram model\n    --grammar <format>            Generate grammar-backed valid UTF-8 text cases: markdown or json\n    --grammar-mode <mode>         Grammar validity mode: valid, near-valid, or malformed\n    --unicode <mode>              Generate Unicode cases, or compose valid-text Unicode into grammar leaves\n    --output-kind <kind>          Unicode-only output boundary: valid-text or raw-bytes\n    --cases <N>                   Number of Unicode or grammar cases to generate\n    --seed <seed>                 Use an inline deterministic seed\n    --seed-file <path>            Read the deterministic seed from a 32-byte file\n    --bytes <N>                   Set profile-backed output size in bytes; supports KB, MB, GB\n    --out <path>                  Stream generated bytes to a file instead of stdout\n    --determinism <mode>          Profile-backed determinism mode: strict or relaxed\n    --metadata-out <path>         Write profile-backed stable generation metadata JSON to a path\n    --quiet                       Suppress human-readable output when --out is used\n    --json                        Emit profile-backed JSON summary when --out is used\n    -h, --help                    Print help\n\nUNICODE MODES:\n    grapheme, bidi, zero-width, emoji, normalization, mixed, invalid-utf8\n\nGRAMMAR MODES:\n    markdown, json with valid, near-valid, or malformed text output. Grammar output is valid UTF-8; invalid-utf8 Unicode composition is rejected.\n\nSTDOUT:\n    Without --out, generated binary bytes are written directly to stdout without an added trailing newline for profile and Unicode-only paths. Grammar output is valid UTF-8 text written as bytes. Use --out before --json for profile-backed generation.",
         name = command.name,
         summary = command.summary
     )
@@ -2411,6 +2580,9 @@ mod tests {
                 assert!(help.contains("--json"));
                 if command == "gen" {
                     assert!(help.contains("generated binary bytes"));
+                    assert!(help.contains("--grammar <format>"));
+                    assert!(help.contains("--grammar-mode <mode>"));
+                    assert!(help.contains("Grammar output is valid UTF-8"));
                     assert!(help.contains("--unicode <mode>"));
                     assert!(help.contains("--output-kind <kind>"));
                     assert!(help.contains("--cases <N>"));
@@ -2440,6 +2612,8 @@ mod tests {
 
         assert!(help.contains("corpusforge gen"));
         assert!(help.contains("--bytes <N>"));
+        assert!(help.contains("--grammar <format>"));
+        assert!(help.contains("--grammar-mode <mode>"));
         assert!(help.contains("--unicode <mode>"));
         assert!(help.contains("generated binary bytes"));
         assert!(!help.contains("Planned for a later milestone"));
@@ -3175,6 +3349,225 @@ mod tests {
         ];
 
         assert_invalid_argument_cases(&cases);
+    }
+
+    #[test]
+    fn gen_grammar_requires_format_mode_cases_and_seed() {
+        let cases = [
+            (
+                &[
+                    "corpusforge",
+                    "gen",
+                    "--grammar-mode",
+                    "valid",
+                    "--cases",
+                    "8",
+                    "--seed",
+                    "1337",
+                ][..],
+                "missing required option `--grammar`",
+            ),
+            (
+                &[
+                    "corpusforge",
+                    "gen",
+                    "--grammar",
+                    "markdown",
+                    "--cases",
+                    "8",
+                    "--seed",
+                    "1337",
+                ][..],
+                "missing required option `--grammar-mode`",
+            ),
+            (
+                &[
+                    "corpusforge",
+                    "gen",
+                    "--grammar",
+                    "markdown",
+                    "--grammar-mode",
+                    "valid",
+                    "--seed",
+                    "1337",
+                ][..],
+                "missing required option `--cases`",
+            ),
+            (
+                &[
+                    "corpusforge",
+                    "gen",
+                    "--grammar",
+                    "markdown",
+                    "--grammar-mode",
+                    "valid",
+                    "--cases",
+                    "8",
+                ][..],
+                "missing required seed source",
+            ),
+        ];
+
+        assert_invalid_argument_cases(&cases);
+    }
+
+    #[test]
+    fn gen_grammar_rejects_invalid_values_and_invalid_utf8_composition() {
+        let cases = [
+            (
+                &["corpusforge", "gen", "--grammar", "xml"][..],
+                "unsupported grammar format",
+            ),
+            (
+                &[
+                    "corpusforge",
+                    "gen",
+                    "--grammar",
+                    "markdown",
+                    "--grammar-mode",
+                    "almost",
+                ][..],
+                "unsupported grammar mode",
+            ),
+            (
+                &[
+                    "corpusforge",
+                    "gen",
+                    "--grammar",
+                    "json",
+                    "--grammar-mode",
+                    "malformed",
+                    "--unicode",
+                    "invalid-utf8",
+                    "--cases",
+                    "8",
+                    "--seed",
+                    "1337",
+                ][..],
+                "cannot be composed into grammar output",
+            ),
+        ];
+
+        assert_invalid_argument_cases(&cases);
+    }
+
+    #[test]
+    fn gen_grammar_rejects_mixed_paths_and_profile_only_options() {
+        let cases = [
+            (
+                &[
+                    "corpusforge",
+                    "gen",
+                    "--grammar",
+                    "markdown",
+                    "--grammar-mode",
+                    "valid",
+                    "--cases",
+                    "8",
+                    "--seed",
+                    "1337",
+                    "--profile",
+                    "profiles/smoke.cff",
+                ][..],
+                "cannot be mixed",
+            ),
+            (
+                &[
+                    "corpusforge",
+                    "gen",
+                    "--grammar",
+                    "markdown",
+                    "--grammar-mode",
+                    "valid",
+                    "--cases",
+                    "8",
+                    "--seed",
+                    "1337",
+                    "--output-kind",
+                    "valid-text",
+                ][..],
+                "cannot be mixed with Unicode-only `--output-kind`",
+            ),
+            (
+                &[
+                    "corpusforge",
+                    "gen",
+                    "--grammar",
+                    "markdown",
+                    "--grammar-mode",
+                    "valid",
+                    "--cases",
+                    "8",
+                    "--seed",
+                    "1337",
+                    "--json",
+                ][..],
+                "only supported for profile-backed",
+            ),
+            (
+                &[
+                    "corpusforge",
+                    "gen",
+                    "--grammar",
+                    "markdown",
+                    "--grammar-mode",
+                    "valid",
+                    "--cases",
+                    "8",
+                    "--seed",
+                    "1337",
+                    "--metadata-out",
+                    "metadata.json",
+                ][..],
+                "only supported for profile-backed",
+            ),
+            (
+                &[
+                    "corpusforge",
+                    "gen",
+                    "--grammar",
+                    "markdown",
+                    "--grammar-mode",
+                    "valid",
+                    "--cases",
+                    "8",
+                    "--seed",
+                    "1337",
+                    "--determinism",
+                    "strict",
+                ][..],
+                "only supported for profile-backed",
+            ),
+        ];
+
+        assert_invalid_argument_cases(&cases);
+    }
+
+    #[test]
+    fn gen_grammar_stdout_is_deterministic_valid_utf8_bytes() {
+        let args = [
+            "corpusforge",
+            "gen",
+            "--grammar",
+            "markdown",
+            "--grammar-mode",
+            "valid",
+            "--cases",
+            "8",
+            "--seed",
+            "1337",
+        ];
+        let CliOutcome::SuccessBytes(first) = run(args) else {
+            panic!("grammar generation should write bytes");
+        };
+        let CliOutcome::SuccessBytes(second) = run(args) else {
+            panic!("grammar generation should write bytes");
+        };
+
+        assert_eq!(first, second);
+        let text = std::str::from_utf8(&first).expect("grammar output should be valid UTF-8");
+        assert!(text.contains("Case 0"));
+        assert!(text.contains("mode: valid") || text.contains("case | 1"));
     }
 
     #[test]

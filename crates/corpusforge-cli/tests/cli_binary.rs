@@ -90,6 +90,9 @@ fn binary_command_help_exits_successfully() {
             assert!(stdout.contains("--json"));
             if command == "gen" {
                 assert!(stdout.contains("generated binary bytes"));
+                assert!(stdout.contains("--grammar <format>"));
+                assert!(stdout.contains("--grammar-mode <mode>"));
+                assert!(stdout.contains("Grammar output is valid UTF-8"));
                 assert!(stdout.contains("--unicode <mode>"));
                 assert!(stdout.contains("--output-kind <kind>"));
                 assert!(stdout.contains("--cases <N>"));
@@ -113,6 +116,8 @@ fn binary_command_help_with_common_flags_exits_successfully() {
     let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
     assert!(stdout.contains("corpusforge gen"));
     assert!(stdout.contains("--bytes <N>"));
+    assert!(stdout.contains("--grammar <format>"));
+    assert!(stdout.contains("--grammar-mode <mode>"));
     assert!(stdout.contains("--unicode <mode>"));
     assert!(stdout.contains("generated binary bytes"));
     assert!(!stdout.contains("Planned for a later milestone"));
@@ -771,6 +776,91 @@ fn binary_gen_unicode_rejects_missing_and_mixed_options() {
     for (args, expected) in cases {
         assert_invalid_argument(args, expected, expected);
     }
+}
+
+#[test]
+fn binary_gen_grammar_stdout_emits_deterministic_text() {
+    let first = corpusforge()
+        .args([
+            "gen",
+            "--grammar",
+            "markdown",
+            "--grammar-mode",
+            "valid",
+            "--cases",
+            "8",
+            "--seed",
+            "1337",
+        ])
+        .output()
+        .expect("binary should run");
+
+    assert!(first.status.success());
+    assert!(first.stderr.is_empty());
+    assert!(std::str::from_utf8(&first.stdout).is_ok());
+
+    let text = String::from_utf8(first.stdout.clone()).expect("stdout should be UTF-8");
+    assert!(text.contains("Case 0"));
+    assert!(text.contains("mode: valid") || text.contains("case | 1"));
+
+    let second = corpusforge()
+        .args([
+            "gen",
+            "--grammar",
+            "markdown",
+            "--grammar-mode",
+            "valid",
+            "--cases",
+            "8",
+            "--seed",
+            "1337",
+        ])
+        .output()
+        .expect("binary should run");
+
+    assert!(second.status.success());
+    assert_eq!(second.stdout, first.stdout);
+}
+
+#[test]
+fn binary_gen_grammar_json_malformed_with_unicode_mixed_out_writes_summary() {
+    let temp = TestDir::new("grammar-gen-out");
+    let out = temp.path().join("json.txt");
+
+    let output = corpusforge()
+        .args([
+            "gen",
+            "--grammar",
+            "json",
+            "--grammar-mode",
+            "malformed",
+            "--cases",
+            "8",
+            "--seed",
+            "1337",
+            "--unicode",
+            "mixed",
+            "--out",
+        ])
+        .arg(&out)
+        .output()
+        .expect("binary should run");
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+
+    let generated = fs::read_to_string(&out).expect("grammar output should be UTF-8");
+    assert!(generated.contains("\"case\"") || generated.contains("{case:"));
+    assert!(generated.contains("mixed") || !generated.is_empty());
+
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    assert!(stdout.contains("generated grammar corpus"));
+    assert!(stdout.contains("grammar: json"));
+    assert!(stdout.contains("grammar_mode: malformed"));
+    assert!(stdout.contains("unicode_mode: mixed"));
+    assert!(stdout.contains("case_count: 8"));
+    assert!(stdout.contains(&format!("byte_count: {}", generated.len())));
+    assert!(stdout.contains("out:"));
 }
 
 #[test]
