@@ -20,9 +20,10 @@ integer-only weighted choice, `.cff` v0 serialization, verification, hashing,
 deterministic fixture profile compilation, and fixture-based Unicode valid-text
 and raw-byte generation in `corpusforge-unicode`. It also includes
 byte-level n-gram profile generation, stable tokenizer CI reports for the
-implemented built-in workflow, byte-level shrink with stdin predicates, and
-profile-backed replay by byte range. Profile-driven Unicode generation and
-broader CI reports are still not implemented.
+implemented built-in workflow, built-in fixture/template-based grammar
+generation, byte-level shrink with stdin predicates, and profile-backed replay
+by byte range. Profile-driven Unicode generation, `.cff` profile-backed
+grammar generation, and broader CI reports are still not implemented.
 
 All v0 deterministic behavior is unstable until explicitly versioned with a
 compatibility guarantee and supporting tests.
@@ -64,6 +65,7 @@ Implemented stream domains are explicit byte labels:
 | `DOMAIN_PROFILE` | `corpusforge/v0/profile` |
 | `DOMAIN_NGRAM` | `corpusforge/v0/ngram` |
 | `DOMAIN_UNICODE` | `corpusforge/v0/unicode` |
+| `DOMAIN_GRAMMAR` | `corpusforge/v0/grammar` |
 | `DOMAIN_CORRUPTION` | `corpusforge/v0/corruption` |
 | `DOMAIN_SHRINK` | `corpusforge/v0/shrink` |
 | `DOMAIN_REPLAY` | `corpusforge/v0/replay` |
@@ -119,9 +121,9 @@ Small golden fixtures under `tests/golden` currently cover:
 These fixtures assert the current core and Unicode fixture APIs exactly.
 Additional `.cff` and profile fixtures cover current v0 serialization,
 verification, hashing, and deterministic fixture profile compilation. They do
-not claim broad Unicode compatibility, structure-aware shrink behavior,
-metadata-file-driven replay, broad CLI output, broad report coverage, or
-cross-version format compatibility.
+not claim broad Unicode compatibility, full Markdown or JSON conformance,
+structure-aware shrink behavior, metadata-file-driven replay, broad CLI
+output, broad report coverage, or cross-version format compatibility.
 
 ## Unicode Output Boundaries
 
@@ -144,11 +146,30 @@ representative adversarial fixture families for the implemented modes, but it
 does not establish broad parser, tokenizer, renderer, or Unicode conformance
 coverage.
 
+## Grammar Output Boundaries
+
+`corpusforge-grammar` currently implements deterministic fixture/template-based
+generation for Markdown and JSON in `valid`, `near-valid`, and `malformed`
+modes. Grammar streams use `DOMAIN_GRAMMAR` with a context derived from the
+grammar format, grammar mode, optional Unicode composition mode, and current
+case shape.
+
+Grammar output is always valid UTF-8 text. The grammar generator can optionally
+compose valid-text Unicode fixture modes into leaf content, but it rejects
+`invalid-utf8` because raw invalid bytes do not compose with grammar output.
+The current grammar implementation is built in and is not backed by `.cff`
+profiles yet.
+
+This is not a complete Markdown or JSON conformance suite. It provides
+representative deterministic cases for local parser or renderer harnesses, but
+it does not establish broad format compatibility or parser correctness claims.
+
 ## CLI Status
 
 Profile build, inspect, and verify command behavior exists for implemented
 `.cff` v0 fixture profile workflows. `corpusforge gen` supports implemented
-fixture-based Unicode modes and byte-level profile-backed n-gram generation.
+fixture-based Unicode modes, byte-level profile-backed n-gram generation, and
+built-in grammar generation through `--grammar markdown|json --grammar-mode valid|near-valid|malformed`.
 `corpusforge ci tokenizer` supports the implemented built-in tokenizer stdin
 harness workflow and stable JSON reports.
 
@@ -186,8 +207,11 @@ Unsupported behavior includes:
 
 - stable `.cff` cross-version compatibility guarantees
 - broad Unicode mutation or compatibility guarantees beyond the fixture APIs
+- `.cff` profile-backed grammar generation
+- full Markdown or JSON conformance-suite behavior
 - structure-aware or Unicode-aware shrinking
 - replay from saved metadata files
+- grammar-specific CI reports
 - broad machine-readable CI reports beyond the tokenizer workflow
 - cross-version deterministic compatibility guarantees
 

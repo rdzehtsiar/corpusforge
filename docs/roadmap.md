@@ -11,7 +11,7 @@ CorpusForge is being developed in milestones. The roadmap is directional and sho
 | 5 | Weighted N-Gram Generator MVP | Primary generation engine integrated with `.cff` profiles and streaming output. |
 | 6 | Tokenizer Torture Workflows | Built-in tokenizer stress modes, external tokenizer harness, and reports. |
 | 7 | Shrinker and Minimal Reproducer Workflow | Predicate-driven minimization and deterministic replay. |
-| 8 | Grammar-Aware Structured Fuzzing | Markdown and JSON grammar profiles with valid, near-valid, and malformed modes. |
+| 8 | Grammar-Aware Structured Fuzzing | Built-in Markdown and JSON fixture/template generation with valid, near-valid, and malformed modes. |
 | 9 | CI Integration, Benchmarks, and Quality Gates | CI templates, report formats, performance baselines, and regression harnesses. |
 | 10 | Packaging, Documentation, and OSS Launch | Static binaries, signed releases, docs, examples, and launch-ready credibility assets. |
 
@@ -27,7 +27,11 @@ Milestone 7 is implemented as a narrow MVP. `corpusforge shrink` performs byte-l
 
 `corpusforge replay` regenerates bytes from a `.cff` profile with an embedded n-gram model using `--seed` or `--seed-file`, then emits the half-open byte range supplied as `--range <start>..<end>`. Replay writes binary bytes to stdout unless `--out` is supplied. `--json` requires `--out` so stdout is not used for both binary replay data and JSON.
 
-Shrink and replay can write stable metadata JSON with no timestamps. Replay is currently direct-flag driven rather than metadata-file driven. The shrinker is byte-level only, not Unicode-aware or structure-aware. CI behavior remains limited to the built-in tokenizer stdin harness workflow; broader CI integrations, packaging, and release automation remain planned.
+Shrink and replay can write stable metadata JSON with no timestamps. Replay is currently direct-flag driven rather than metadata-file driven. The shrinker is byte-level only, not Unicode-aware or structure-aware.
+
+Milestone 8 is implemented narrowly as built-in grammar generation for Markdown and JSON. `corpusforge gen --grammar markdown|json --grammar-mode valid|near-valid|malformed` emits deterministic UTF-8 text cases from fixtures/templates. Grammar generation can optionally compose valid-text Unicode fixture modes into leaf content with `--unicode <mode>`, but `invalid-utf8` is rejected because raw invalid bytes do not compose with grammar output. This is not `.cff` profile-backed yet and is not a full Markdown or JSON conformance suite. See [Grammar workflow demo](./grammar-workflow.md) for the current parser- and renderer-harness workflow.
+
+CI behavior remains limited to the built-in tokenizer stdin harness workflow; broader CI integrations, grammar-specific CI reports, packaging, and release automation remain planned.
 
 ## Compatibility Note
 

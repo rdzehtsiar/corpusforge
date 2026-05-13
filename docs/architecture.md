@@ -10,7 +10,7 @@ CorpusForge is not an AI writing tool, a local language model, a hosted service,
 
 ## Current Shape
 
-The repository has moved beyond the initial foundation, but the main corpus generation pipeline is still incomplete. The Rust workspace, deterministic core primitives, Milestone 3 `.cff` v0 profile workflows, Milestone 4 Unicode fixture APIs, Milestone 5 byte-level n-gram generation, Milestone 6 tokenizer workflow, and narrow Milestone 7 shrink/replay MVP exist.
+The repository has moved beyond the initial foundation, but the main corpus generation pipeline is still incomplete. The Rust workspace, deterministic core primitives, Milestone 3 `.cff` v0 profile workflows, Milestone 4 Unicode fixture APIs, Milestone 5 byte-level n-gram generation, Milestone 6 tokenizer workflow, narrow Milestone 7 shrink/replay MVP, and narrow Milestone 8 grammar generation exist.
 
 Implemented now:
 
@@ -30,19 +30,26 @@ Implemented now:
 - Byte-level shrink that invokes a predicate directly, writes candidate bytes to stdin, preserves reproducible nonzero exits or consistent timeouts, and rejects flaky predicates.
 - Profile-backed replay from a `.cff` profile, seed or seed file, and half-open byte range.
 - Stable shrink and replay metadata JSON without timestamps.
+- Built-in fixture/template-based grammar generation for Markdown and JSON.
+- Grammar modes: `valid`, `near-valid`, and `malformed`.
+- Grammar CLI support through `corpusforge gen --grammar markdown|json --grammar-mode valid|near-valid|malformed`.
+- Optional valid-text Unicode composition into grammar leaf content.
 
 Not implemented yet:
 
 - profile-driven Unicode corpus generation
+- `.cff` profile-backed grammar generation
+- full Markdown or JSON conformance-suite behavior
 - Unicode-aware or structure-aware shrinking
 - replay from saved metadata files
+- grammar-specific CI reports
 - broad CI report formats beyond the tokenizer workflow
 - static packaging or release automation
 
 ## High-Level Architecture
 
 ```text
-Local inputs / built-in profiles / future grammars
+Local inputs / built-in profiles / built-in grammar fixtures
                   |
                   v
             Profile compiler
@@ -62,7 +69,7 @@ Local inputs / built-in profiles / future grammars
  Local tests / CI     Regression fixture
 ```
 
-The diagram describes the planned architecture. Current milestones implement deterministic `.cff` v0 fixture profile build, read, inspect, verify, hashing, fixture-based Unicode generation, byte-level n-gram generation, a tokenizer stdin harness workflow, byte-level shrink, and profile-backed replay. Grammar-aware generation, broad CI integration, packaging, and release automation remain planned.
+The diagram describes the planned architecture. Current milestones implement deterministic `.cff` v0 fixture profile build, read, inspect, verify, hashing, fixture-based Unicode generation, byte-level n-gram generation, a tokenizer stdin harness workflow, byte-level shrink, profile-backed replay, and built-in fixture/template-based grammar generation. `.cff`-backed grammar profiles, broad CI integration, packaging, and release automation remain planned.
 
 ## Crate Responsibilities
 
@@ -72,6 +79,7 @@ The diagram describes the planned architecture. Current milestones implement det
 - `corpusforge-profile`: deterministic fixture profile compilation into `.cff` v0 profile packs with embedded byte-level n-gram models, with broader profile compilation still planned.
 - `corpusforge-unicode`: implemented fixture-based Unicode adversarial valid-text and raw-byte APIs, including mode/output validation for grapheme, bidi, zero-width, emoji, normalization, mixed, and invalid-utf8 cases. This crate does not yet provide broad Unicode mutation or confusable generation.
 - `corpusforge-ngram`: implemented byte-level weighted bigram profile building and deterministic sampling.
+- `corpusforge-grammar`: implemented fixture/template-based Markdown and JSON text generation for valid, near-valid, and malformed modes. Grammar output is valid UTF-8 text, can optionally compose valid-text Unicode fixture modes into leaf content, and rejects `invalid-utf8` composition. This crate is not a full Markdown or JSON conformance suite.
 - `corpusforge-shrink`: implemented byte-level reducer and minimizer logic using external stdin predicates. It is independent from specific parsers or tokenizers, but it is not Unicode-aware or structure-aware.
 - `corpusforge-testkit`: shared deterministic test utilities and fixture helpers.
 
@@ -89,9 +97,11 @@ Initial development does not include:
 
 ## Current Limitations
 
-The current CLI is intentionally narrow. Implemented profile commands can build, inspect, and verify `.cff` v0 fixture profile packs. Implemented generation can produce fixture-based Unicode cases and byte-level profile-backed n-gram output. Implemented shrink and replay behavior is limited to the Milestone 7 MVP.
+The current CLI is intentionally narrow. Implemented profile commands can build, inspect, and verify `.cff` v0 fixture profile packs. Implemented generation can produce fixture-based Unicode cases, byte-level profile-backed n-gram output, and fixture/template-based grammar text for Markdown and JSON. Implemented shrink and replay behavior is limited to the Milestone 7 MVP.
 
 `invalid-utf8` is intentionally limited to raw-byte output; valid-text output rejects it because it may produce bytes that cannot decode as UTF-8.
+
+Grammar generation is available through `corpusforge gen --grammar markdown|json --grammar-mode valid|near-valid|malformed`. It writes UTF-8 text only. `--unicode <mode>` can compose valid-text Unicode fixture modes into grammar leaf content, but `invalid-utf8` is rejected because raw invalid bytes do not compose with grammar output. Grammar generation is built in and is not `.cff` profile-backed yet. See [Grammar workflow demo](./grammar-workflow.md) for the current harness-oriented workflow.
 
 The shrinker operates on bytes only. It invokes predicate commands directly, writes candidate bytes to stdin, preserves repeatable nonzero exits or consistent timeouts, and rejects flaky predicate behavior. It does not understand Unicode grapheme boundaries, syntax trees, parser states, or structured formats.
 

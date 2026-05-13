@@ -26,7 +26,7 @@ The product direction is:
 
 CorpusForge is at an early implementation stage.
 
-This repository now contains a Rust workspace, shared error types, deterministic seed and stream primitives, Milestone 3 `.cff` v0 profile support, Milestone 6 built-in tokenizer Unicode workflows, and a narrow Milestone 7 shrink/replay MVP. The `corpusforge` binary can print top-level and command-specific help, and `.cff` v0 profile build, read, inspect, and verify workflows exist for deterministic fixture profiles.
+This repository now contains a Rust workspace, shared error types, deterministic seed and stream primitives, Milestone 3 `.cff` v0 profile support, Milestone 6 built-in tokenizer Unicode workflows, a narrow Milestone 7 shrink/replay MVP, and narrow Milestone 8 fixture/template-based grammar generation. The `corpusforge` binary can print top-level and command-specific help, and `.cff` v0 profile build, read, inspect, and verify workflows exist for deterministic fixture profiles.
 
 The `corpusforge-unicode` crate includes Milestone 4 library APIs for deterministic, fixture-based Unicode adversarial generation. The CLI also exposes these fixture-based tokenizer modes through `corpusforge gen --unicode ...` and `corpusforge ci tokenizer`: `grapheme`, `bidi`, `zero-width`, `emoji`, `normalization`, `mixed`, and `invalid-utf8`.
 
@@ -39,6 +39,8 @@ Milestone 7 adds byte-level shrinking and profile-backed replay by byte range. `
 `corpusforge replay` reads a `.cff` profile with an embedded n-gram model, accepts `--seed` or `--seed-file`, and replays a half-open `--range <start>..<end>` byte range. Without `--out`, replay writes binary bytes directly to stdout. `--json` requires `--out` because stdout otherwise carries replayed bytes. Shrink and replay can write stable metadata JSON without timestamps.
 
 Profile format support is limited to unstable `.cff` v0 behavior with no cross-version compatibility guarantee. The shrinker is byte-level, not Unicode-aware or structure-aware. Replay currently uses direct profile, seed, and range flags rather than consuming a saved metadata file. Broader deterministic output guarantees, compatibility claims, and generation behavior should be treated as planned until implemented and covered by tests.
+
+Milestone 8 adds built-in grammar generation for Markdown and JSON through `corpusforge gen --grammar markdown|json --grammar-mode valid|near-valid|malformed`. Grammar output is UTF-8 text only and is built from deterministic fixtures/templates. It is not a full Markdown or JSON conformance suite, and it is not backed by `.cff` profiles yet. Grammar generation can optionally compose valid-text Unicode fixture modes into leaf content with `--unicode <mode>`; `invalid-utf8` does not compose with grammar generation because grammar output is valid UTF-8. See [Grammar workflow demo](./docs/grammar-workflow.md) for the current harness-oriented workflow.
 
 Do not rely on CorpusForge for production workflows yet.
 
@@ -60,12 +62,13 @@ Initial development is focused on:
 - seedable corpus profiles
 - deterministic text and byte generation
 - Unicode adversarial modes
+- built-in Markdown and JSON grammar fixtures
 - profile inspection and verification
 - reproducible replay
 - shrinking/minimization workflows
 - CI-friendly reports
 
-Later work may add grammar-aware generation for formats such as Markdown and JSON once the core deterministic and Unicode-focused workflows are solid.
+Later work may connect grammar generation to `.cff` profiles, expand coverage, or add grammar-specific CI reports once those behaviors are implemented and tested.
 
 ## Non-Goals
 
@@ -110,6 +113,7 @@ Project documentation:
 - [Architecture](./docs/architecture.md)
 - [Determinism](./docs/determinism.md)
 - [Tokenizer workflow demo](./docs/tokenizer-workflow.md)
+- [Grammar workflow demo](./docs/grammar-workflow.md)
 - [Roadmap](./docs/roadmap.md)
 - [Agent workflow](./docs/agent-workflow.md)
 - [Contributing](./CONTRIBUTING.md)
