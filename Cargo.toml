@@ -4,6 +4,7 @@ members = [
     "crates/corpusforge-cff",
     "crates/corpusforge-cli",
     "crates/corpusforge-core",
+    "crates/corpusforge-grammar",
     "crates/corpusforge-ngram",
     "crates/corpusforge-profile",
     "crates/corpusforge-shrink",

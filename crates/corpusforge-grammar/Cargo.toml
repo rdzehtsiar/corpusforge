@@ -1,0 +1,18 @@
+[package]
+name = "corpusforge-grammar"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "CorpusForge grammar-aware fixture generation"
+
+[dependencies]
+corpusforge-core = { path = "../corpusforge-core" }
+corpusforge-unicode = { path = "../corpusforge-unicode" }
+
+[dev-dependencies]
+corpusforge-testkit = { path = "../corpusforge-testkit" }
+
+[lints]
+workspace = true

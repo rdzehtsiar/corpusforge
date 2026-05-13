@@ -82,6 +82,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "corpusforge-grammar"
+version = "0.1.0"
+dependencies = [
+ "corpusforge-core",
+ "corpusforge-testkit",
+ "corpusforge-unicode",
+]
+
+[[package]]
 name = "corpusforge-ngram"
 version = "0.1.0"
 dependencies = [

@@ -18,6 +18,8 @@ pub const DOMAIN_PROFILE: StreamDomain = StreamDomain::new("corpusforge/v0/profi
 pub const DOMAIN_NGRAM: StreamDomain = StreamDomain::new("corpusforge/v0/ngram");
 /// Domain for Unicode adversarial generation.
 pub const DOMAIN_UNICODE: StreamDomain = StreamDomain::new("corpusforge/v0/unicode");
+/// Domain for grammar-aware text generation.
+pub const DOMAIN_GRAMMAR: StreamDomain = StreamDomain::new("corpusforge/v0/grammar");
 /// Domain for byte or text corruption generation.
 pub const DOMAIN_CORRUPTION: StreamDomain = StreamDomain::new("corpusforge/v0/corruption");
 /// Domain for shrinking and minimization choices.
@@ -125,8 +127,8 @@ fn derive_chacha_seed(master_seed: &MasterSeed, domain: StreamDomain, context: &
 #[cfg(test)]
 mod tests {
     use super::{
-        DeterministicStream, StreamDomain, DOMAIN_NGRAM, DOMAIN_PROFILE, DOMAIN_ROOT,
-        DOMAIN_UNICODE,
+        DeterministicStream, StreamDomain, DOMAIN_GRAMMAR, DOMAIN_NGRAM, DOMAIN_PROFILE,
+        DOMAIN_ROOT, DOMAIN_UNICODE,
     };
     use crate::seed::MasterSeed;
     use corpusforge_testkit::TEST_SEED_BYTES;
@@ -155,6 +157,32 @@ mod tests {
         let mut ngram = DeterministicStream::from_seed(&TEST_SEED, DOMAIN_NGRAM);
 
         assert_ne!(profile.next_u64(), ngram.next_u64());
+    }
+
+    #[test]
+    fn grammar_domain_is_separated_from_existing_streams() {
+        let mut grammar = DeterministicStream::from_seed(&TEST_SEED, DOMAIN_GRAMMAR);
+        let grammar_value = grammar.next_u64();
+
+        let existing_domains = [
+            DOMAIN_ROOT,
+            DOMAIN_PROFILE,
+            DOMAIN_NGRAM,
+            DOMAIN_UNICODE,
+            super::DOMAIN_CORRUPTION,
+            super::DOMAIN_SHRINK,
+            super::DOMAIN_REPLAY,
+        ];
+
+        for domain in existing_domains {
+            let mut stream = DeterministicStream::from_seed(&TEST_SEED, domain);
+
+            assert_ne!(
+                grammar_value,
+                stream.next_u64(),
+                "grammar stream should be separated from {domain}"
+            );
+        }
     }
 
     #[test]
