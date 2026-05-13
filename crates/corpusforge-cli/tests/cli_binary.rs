@@ -264,44 +264,15 @@ fn binary_ci_tokenizer_writes_failing_report_with_failure_sample() {
 fn binary_ci_tokenizer_rejects_missing_required_args() {
     let cases: [(Vec<OsString>, &str); 3] = [
         (
-            vec![
-                "ci".into(),
-                "tokenizer".into(),
-                "--cases".into(),
-                "1".into(),
-            ],
+            os_args(["ci", "tokenizer", "--cases", "1"]),
             "missing required option `--unicode`",
         ),
         (
-            vec![
-                "ci".into(),
-                "tokenizer".into(),
-                "--unicode".into(),
-                "mixed".into(),
-                "--output-kind".into(),
-                "valid-text".into(),
-                "--cases".into(),
-                "1".into(),
-                "--seed".into(),
-                "1337".into(),
-            ],
+            tokenizer_ci_args_before_command("mixed", "1"),
             "missing required option `--command`",
         ),
         (
-            vec![
-                "ci".into(),
-                "tokenizer".into(),
-                "--unicode".into(),
-                "mixed".into(),
-                "--output-kind".into(),
-                "valid-text".into(),
-                "--cases".into(),
-                "1".into(),
-                "--seed".into(),
-                "1337".into(),
-                "--command".into(),
-                "tokenizer-harness".into(),
-            ],
+            extend_os_args(tokenizer_ci_args("mixed", "1"), ["tokenizer-harness"]),
             "missing required option `--report-out`",
         ),
     ];
@@ -320,20 +291,7 @@ fn binary_shrink_writes_reduced_bytes_metadata_and_json_summary() {
     fs::write(&input, b"prefix fail suffix").expect("input should be written");
 
     let output = corpusforge()
-        .args(["shrink", "--input"])
-        .arg(&input)
-        .args(["--predicate"])
-        .arg(std::env::current_exe().expect("test executable should exist"))
-        .args([
-            "--predicate-arg",
-            "--ignored",
-            "--predicate-arg",
-            "--exact",
-            "--predicate-arg",
-            "shrink_predicate_fails_on_fail_substring",
-            "--out",
-        ])
-        .arg(&out)
+        .args(shrink_test_args(&input, &out))
         .args(["--metadata-out"])
         .arg(&metadata)
         .args(["--timeout-ms", "1000", "--max-runs", "100", "--json"])
@@ -366,20 +324,7 @@ fn binary_shrink_quiet_suppresses_summary_but_writes_output() {
     fs::write(&input, b"before fail after").expect("input should be written");
 
     let output = corpusforge()
-        .args(["shrink", "--input"])
-        .arg(&input)
-        .args(["--predicate"])
-        .arg(std::env::current_exe().expect("test executable should exist"))
-        .args([
-            "--predicate-arg",
-            "--ignored",
-            "--predicate-arg",
-            "--exact",
-            "--predicate-arg",
-            "shrink_predicate_fails_on_fail_substring",
-            "--out",
-        ])
-        .arg(&out)
+        .args(shrink_test_args(&input, &out))
         .args(["--quiet", "--json"])
         .output()
         .expect("binary should run");
@@ -979,12 +924,7 @@ fn binary_profile_malformed_and_unsupported_flags_fail_cleanly() {
     temp.write("fixture.txt", b"fixture");
     let cases = [
         (
-            vec![
-                "profile".into(),
-                "build".into(),
-                "--out".into(),
-                "out.cff".into(),
-            ],
+            os_args(["profile", "build", "--out", "out.cff"]),
             "missing input",
         ),
         (
@@ -996,34 +936,15 @@ fn binary_profile_malformed_and_unsupported_flags_fail_cleanly() {
             "missing required option `--out`",
         ),
         (
-            vec![
-                "profile".into(),
-                "inspect".into(),
-                "--profile".into(),
-                "x.cff".into(),
-                "--format".into(),
-                "json".into(),
-            ],
+            extend_os_args(profile_file_args("inspect", "x.cff"), ["--format", "json"]),
             "unknown option `--format`",
         ),
         (
-            vec![
-                "profile".into(),
-                "verify".into(),
-                "--profile".into(),
-                "x.cff".into(),
-                "--unicode".into(),
-            ],
+            extend_os_args(profile_file_args("verify", "x.cff"), ["--unicode"]),
             "unknown option `--unicode`",
         ),
         (
-            vec![
-                "verify".into(),
-                "--profile".into(),
-                "x.cff".into(),
-                "--seed".into(),
-                "1".into(),
-            ],
+            extend_os_args(os_args(["verify", "--profile", "x.cff"]), ["--seed", "1"]),
             "unknown option `--seed`",
         ),
     ];
@@ -1095,6 +1016,10 @@ fn corpusforge_binary_path() -> PathBuf {
 }
 
 fn tokenizer_ci_args(mode: &str, cases: &str) -> Vec<OsString> {
+    extend_os_args(tokenizer_ci_args_before_command(mode, cases), ["--command"])
+}
+
+fn tokenizer_ci_args_before_command(mode: &str, cases: &str) -> Vec<OsString> {
     os_args([
         "ci",
         "tokenizer",
@@ -1106,7 +1031,6 @@ fn tokenizer_ci_args(mode: &str, cases: &str) -> Vec<OsString> {
         cases,
         "--seed",
         "1337",
-        "--command",
     ])
 }
 
@@ -1165,6 +1089,32 @@ fn os_args<const N: usize>(args: [&str; N]) -> Vec<OsString> {
 fn extend_os_args<const N: usize>(mut args: Vec<OsString>, extra: [&str; N]) -> Vec<OsString> {
     args.extend(extra.into_iter().map(OsString::from));
     args
+}
+
+fn shrink_test_args(input: &Path, out: &Path) -> Vec<OsString> {
+    let mut args = os_args(["shrink", "--input"]);
+    args.push(input.as_os_str().to_os_string());
+    args.extend(os_args(["--predicate"]));
+    args.push(
+        std::env::current_exe()
+            .expect("test executable should exist")
+            .into_os_string(),
+    );
+    args.extend(os_args([
+        "--predicate-arg",
+        "--ignored",
+        "--predicate-arg",
+        "--exact",
+        "--predicate-arg",
+        "shrink_predicate_fails_on_fail_substring",
+        "--out",
+    ]));
+    args.push(out.as_os_str().to_os_string());
+    args
+}
+
+fn profile_file_args(subcommand: &str, profile: &str) -> Vec<OsString> {
+    os_args(["profile", subcommand, "--profile", profile])
 }
 
 fn assert_profile_summary(stdout: &str) {

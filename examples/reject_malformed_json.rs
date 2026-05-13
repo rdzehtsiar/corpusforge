@@ -47,25 +47,19 @@ fn starts_and_ends_like_json_value(line: &str) -> bool {
 
 fn check_jsonish_structure(line: &str) -> Result<(), String> {
     let mut stack = Vec::new();
-    let mut in_string = false;
-    let mut escaped = false;
+    let mut string_state = StringState::Outside;
     let mut previous = PreviousToken::Start;
 
     for current in line.chars() {
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if current == '\\' {
-                escaped = true;
-            } else if current == '"' {
-                in_string = false;
+        if string_state.is_inside() {
+            if string_state.accept(current) == StringEvent::Closed {
                 previous = PreviousToken::Value;
             }
             continue;
         }
 
         match current {
-            '"' => in_string = true,
+            '"' => string_state = StringState::Inside,
             '{' => {
                 stack.push(JsonishDelimiter::Object);
                 previous = PreviousToken::Open;
@@ -85,47 +79,50 @@ fn check_jsonish_structure(line: &str) -> Result<(), String> {
                 previous = PreviousToken::Value;
             }
             ',' => {
-                if matches!(
-                    previous,
-                    PreviousToken::Start
-                        | PreviousToken::Open
-                        | PreviousToken::Comma
-                        | PreviousToken::Colon
-                ) {
-                    return Err("comma is not preceded by a value".to_string());
-                }
+                require_value_before_comma(previous)?;
                 previous = PreviousToken::Comma;
             }
             ':' => {
-                if !stack
-                    .last()
-                    .is_some_and(|value| *value == JsonishDelimiter::Object)
-                {
-                    return Err("colon appears outside an object".to_string());
-                }
-                if !matches!(previous, PreviousToken::Value) {
-                    return Err("colon is not preceded by a key-like string".to_string());
-                }
+                require_object_colon(&stack, previous)?;
                 previous = PreviousToken::Colon;
             }
             current if current.is_whitespace() => {}
-            _ => {
-                if matches!(
-                    previous,
-                    PreviousToken::Colon | PreviousToken::Open | PreviousToken::Comma
-                ) {
-                    previous = PreviousToken::Value;
-                }
-            }
+            _ => previous = previous.after_bare_value(),
         }
     }
 
-    if in_string {
+    if string_state.is_inside() {
         return Err("string literal is not closed".to_string());
     }
 
     if !stack.is_empty() {
         return Err("object or array delimiter is not closed".to_string());
+    }
+
+    Ok(())
+}
+
+fn require_value_before_comma(previous: PreviousToken) -> Result<(), String> {
+    if matches!(
+        previous,
+        PreviousToken::Start | PreviousToken::Open | PreviousToken::Comma | PreviousToken::Colon
+    ) {
+        Err("comma is not preceded by a value".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+fn require_object_colon(
+    stack: &[JsonishDelimiter],
+    previous: PreviousToken,
+) -> Result<(), String> {
+    if !stack.last().is_some_and(|value| *value == JsonishDelimiter::Object) {
+        return Err("colon appears outside an object".to_string());
+    }
+
+    if !matches!(previous, PreviousToken::Value) {
+        return Err("colon is not preceded by a key-like string".to_string());
     }
 
     Ok(())
@@ -163,4 +160,49 @@ enum PreviousToken {
     Value,
     Comma,
     Colon,
+}
+
+impl PreviousToken {
+    const fn after_bare_value(self) -> Self {
+        match self {
+            Self::Colon | Self::Open | Self::Comma => Self::Value,
+            _ => self,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StringState {
+    Outside,
+    Inside,
+    Escaped,
+}
+
+impl StringState {
+    const fn is_inside(self) -> bool {
+        !matches!(self, Self::Outside)
+    }
+
+    fn accept(&mut self, current: char) -> StringEvent {
+        *self = match (*self, current) {
+            (Self::Escaped, _) => Self::Inside,
+            (Self::Inside, '\\') => Self::Escaped,
+            (Self::Inside, '"') => {
+                return self.close();
+            }
+            (state, _) => state,
+        };
+        StringEvent::Open
+    }
+
+    fn close(&mut self) -> StringEvent {
+        *self = Self::Outside;
+        StringEvent::Closed
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StringEvent {
+    Open,
+    Closed,
 }

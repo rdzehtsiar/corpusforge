@@ -296,44 +296,56 @@ where
     match first.as_ref() {
         "--help" | "-h" => Ok(ParsedCommand::TopHelp),
         "--version" | "-V" => Ok(ParsedCommand::Version),
-        command_name => {
-            let command = find_command(command_name).ok_or_else(|| {
-                CorpusForgeError::invalid_profile(format!(
-                    "unknown command `{command_name}`; run `corpusforge --help`"
-                ))
-            })?;
+        command_name => parse_command(command_name, args.collect::<Vec<_>>()),
+    }
+}
 
-            let remaining = args.collect::<Vec<_>>();
-            if command.name == "ci" && first_arg_is(&remaining, "tokenizer") {
-                let tokenizer_args = &remaining[1..];
-                if contains_only_help_flag(tokenizer_args) {
-                    Ok(ParsedCommand::CommandHelp(command))
-                } else {
-                    parse_ci_tokenizer_options(tokenizer_args)
-                        .map(ParsedCommand::ExecuteCiTokenizer)
-                }
-            } else if command.name == "shrink" {
-                if contains_only_help_flag(&remaining) {
-                    Ok(ParsedCommand::CommandHelp(command))
-                } else {
-                    parse_shrink_options(&remaining).map(ParsedCommand::ExecuteShrink)
-                }
-            } else if contains_help_flag(&remaining) {
-                Ok(ParsedCommand::CommandHelp(command))
-            } else if command.name == "profile" {
-                parse_profile_command(&remaining).map(ParsedCommand::ExecuteProfile)
-            } else if command.name == "gen" {
-                parse_gen_options(&remaining).map(ParsedCommand::ExecuteGen)
-            } else if command.name == "replay" {
-                parse_replay_options(&remaining).map(ParsedCommand::ExecuteReplay)
-            } else if command.name == "verify" && contains_profile_option(&remaining) {
-                parse_profile_file_options("verify", &remaining)
-                    .map(ParsedCommand::ExecuteVerifyAlias)
-            } else {
-                parse_common_options(command, &remaining)?;
-                Ok(ParsedCommand::ExecutePlaceholder(command))
-            }
+fn parse_command(command_name: &str, remaining: Vec<OsString>) -> Result<ParsedCommand> {
+    let command = find_command(command_name).ok_or_else(|| {
+        CorpusForgeError::invalid_profile(format!(
+            "unknown command `{command_name}`; run `corpusforge --help`"
+        ))
+    })?;
+
+    match command.name {
+        "ci" if first_arg_is(&remaining, "tokenizer") => {
+            parse_ci_tokenizer_command(command, &remaining)
         }
+        "shrink" => parse_shrink_command(command, &remaining),
+        _ if contains_help_flag(&remaining) => Ok(ParsedCommand::CommandHelp(command)),
+        "profile" => parse_profile_command(&remaining).map(ParsedCommand::ExecuteProfile),
+        "gen" => parse_gen_options(&remaining).map(ParsedCommand::ExecuteGen),
+        "replay" => parse_replay_options(&remaining).map(ParsedCommand::ExecuteReplay),
+        "verify" if contains_profile_option(&remaining) => {
+            parse_profile_file_options("verify", &remaining).map(ParsedCommand::ExecuteVerifyAlias)
+        }
+        _ => {
+            parse_common_options(command, &remaining)?;
+            Ok(ParsedCommand::ExecutePlaceholder(command))
+        }
+    }
+}
+
+fn parse_ci_tokenizer_command(
+    command: &'static CommandSpec,
+    remaining: &[OsString],
+) -> Result<ParsedCommand> {
+    let tokenizer_args = &remaining[1..];
+    if contains_only_help_flag(tokenizer_args) {
+        Ok(ParsedCommand::CommandHelp(command))
+    } else {
+        parse_ci_tokenizer_options(tokenizer_args).map(ParsedCommand::ExecuteCiTokenizer)
+    }
+}
+
+fn parse_shrink_command(
+    command: &'static CommandSpec,
+    remaining: &[OsString],
+) -> Result<ParsedCommand> {
+    if contains_only_help_flag(remaining) {
+        Ok(ParsedCommand::CommandHelp(command))
+    } else {
+        parse_shrink_options(remaining).map(ParsedCommand::ExecuteShrink)
     }
 }
 
@@ -835,29 +847,7 @@ fn parse_replay_option(
                 flag,
             )?)
         }
-        "--quiet" => {
-            claim_switch(&mut state.quiet, flag)?;
-            return Ok(1);
-        }
-        "--json" => {
-            claim_switch(&mut state.json, flag)?;
-            return Ok(1);
-        }
-        "-h" | "--help" => {
-            return Err(CorpusForgeError::invalid_argument(
-                "help must be requested without other arguments; run `corpusforge replay --help`",
-            ))
-        }
-        other if other.starts_with('-') => {
-            return Err(CorpusForgeError::invalid_argument(format!(
-                "unknown option `{other}` for `replay`; run `corpusforge replay --help`"
-            )));
-        }
-        other => {
-            return Err(CorpusForgeError::invalid_argument(format!(
-                "unexpected argument `{other}` for `replay`; run `corpusforge replay --help`"
-            )));
-        }
+        _ => return parse_quiet_json_or_reject("replay", flag, &mut state.quiet, &mut state.json),
     }
 
     Ok(2)
@@ -1125,31 +1115,36 @@ fn parse_shrink_option(
         "--max-runs" => {
             state.max_runs = Some(take_max_runs(command_spec, args, index, &state.max_runs)?)
         }
-        "--quiet" => {
-            claim_switch(&mut state.quiet, flag)?;
-            return Ok(1);
-        }
-        "--json" => {
-            claim_switch(&mut state.json, flag)?;
-            return Ok(1);
-        }
-        "-h" | "--help" => {
-            return Err(CorpusForgeError::invalid_argument(
-                "help must be requested without other arguments; run `corpusforge shrink --help`",
-            ))
-        }
-        other if other.starts_with('-') => {
-            return Err(CorpusForgeError::invalid_argument(format!(
-                "unknown option `{other}` for `shrink`; run `corpusforge shrink --help`"
-            )));
-        }
-        other => {
-            return Err(CorpusForgeError::invalid_argument(format!(
-                "unexpected argument `{other}` for `shrink`; run `corpusforge shrink --help`"
-            )));
-        }
+        _ => return parse_quiet_json_or_reject("shrink", flag, &mut state.quiet, &mut state.json),
     }
     Ok(2)
+}
+
+fn parse_quiet_json_or_reject(
+    command: &str,
+    flag: &str,
+    quiet: &mut bool,
+    json: &mut bool,
+) -> Result<usize> {
+    match flag {
+        "--quiet" => {
+            claim_switch(quiet, flag)?;
+            Ok(1)
+        }
+        "--json" => {
+            claim_switch(json, flag)?;
+            Ok(1)
+        }
+        "-h" | "--help" => Err(CorpusForgeError::invalid_argument(format!(
+            "help must be requested without other arguments; run `corpusforge {command} --help`"
+        ))),
+        other if other.starts_with('-') => Err(CorpusForgeError::invalid_argument(format!(
+            "unknown option `{other}` for `{command}`; run `corpusforge {command} --help`"
+        ))),
+        other => Err(CorpusForgeError::invalid_argument(format!(
+            "unexpected argument `{other}` for `{command}`; run `corpusforge {command} --help`"
+        ))),
+    }
 }
 
 fn finish_shrink_options(state: ShrinkOptionState) -> Result<ShrinkOptions> {
@@ -1877,11 +1872,6 @@ fn format_gen_metadata(
     seed: &MasterSeed,
     profile_hash: &str,
 ) -> String {
-    let output_mode = if options.out.is_some() {
-        "file"
-    } else {
-        "stdout"
-    };
     format!(
         "{{\"tool_version\":\"{}\",\"command\":\"gen\",\"seed\":\"{}\",\"profile_hash\":\"{}\",\"engine_name\":\"{}\",\"engine_version\":{},\"byte_count\":{},\"determinism\":\"{}\",\"output_mode\":\"{}\",\"json_summary\":{},\"quiet\":{}}}\n",
         json_escape(env!("CARGO_PKG_VERSION")),
@@ -1891,7 +1881,7 @@ fn format_gen_metadata(
         ENGINE_VERSION,
         options.byte_count,
         options.determinism.as_str(),
-        output_mode,
+        output_mode(&options.out),
         options.json,
         options.quiet
     )
@@ -1902,12 +1892,6 @@ fn format_replay_metadata(
     seed: &MasterSeed,
     profile_hash: &str,
 ) -> String {
-    let output_mode = if options.out.is_some() {
-        "file"
-    } else {
-        "stdout"
-    };
-
     format!(
         "{{\"tool_version\":\"{}\",\"command\":\"replay\",\"seed\":\"{}\",\"profile_hash\":\"{}\",\"engine_name\":\"{}\",\"engine_version\":{},\"range_start\":{},\"range_end\":{},\"byte_count\":{},\"output_mode\":\"{}\",\"quiet\":{},\"json\":{}}}\n",
         json_escape(env!("CARGO_PKG_VERSION")),
@@ -1918,10 +1902,18 @@ fn format_replay_metadata(
         options.range.start,
         options.range.end,
         options.range.byte_count(),
-        output_mode,
+        output_mode(&options.out),
         options.quiet,
         options.json
     )
+}
+
+fn output_mode(out: &Option<PathBuf>) -> &'static str {
+    if out.is_some() {
+        "file"
+    } else {
+        "stdout"
+    }
 }
 
 fn execute_profile_command(command: ProfileCommand) -> Result<String> {
@@ -2484,6 +2476,7 @@ mod tests {
     use super::{run, CliOutcome};
     use corpusforge_testkit::bytes_to_hex;
     use std::io::{self, Read};
+    use std::path::Path;
 
     #[test]
     fn top_level_help_lists_commands() {
@@ -2957,35 +2950,21 @@ mod tests {
         let metadata = temp_report_path("shrink-metadata.json");
         std::fs::write(&input, b"prefix fail suffix").expect("input should be written");
 
-        let helper = std::env::current_exe().expect("test executable should exist");
-        let helper_text = helper.display().to_string();
-        let input_text = input.display().to_string();
         let out_text = out.display().to_string();
         let metadata_text = metadata.display().to_string();
 
-        let outcome = run([
-            "corpusforge",
-            "shrink",
-            "--input",
-            &input_text,
-            "--predicate",
-            &helper_text,
-            "--predicate-arg",
-            "--ignored",
-            "--predicate-arg",
-            "--exact",
-            "--predicate-arg",
-            "tests::shrink_harness_fails_on_fail_substring",
-            "--out",
-            &out_text,
-            "--metadata-out",
-            &metadata_text,
-            "--timeout-ms",
-            "1000",
-            "--max-runs",
-            "100",
-            "--json",
-        ]);
+        let outcome = run(extend_owned_args(
+            shrink_test_args(&input, &out),
+            [
+                "--metadata-out",
+                &metadata_text,
+                "--timeout-ms",
+                "1000",
+                "--max-runs",
+                "100",
+                "--json",
+            ],
+        ));
 
         let CliOutcome::Success(summary) = outcome else {
             panic!("shrink should succeed");
@@ -3018,29 +2997,10 @@ mod tests {
         let out = temp_report_path("shrink-quiet-out.txt");
         std::fs::write(&input, b"before fail after").expect("input should be written");
 
-        let helper = std::env::current_exe().expect("test executable should exist");
-        let helper_text = helper.display().to_string();
-        let input_text = input.display().to_string();
-        let out_text = out.display().to_string();
-
-        let outcome = run([
-            "corpusforge",
-            "shrink",
-            "--input",
-            &input_text,
-            "--predicate",
-            &helper_text,
-            "--predicate-arg",
-            "--ignored",
-            "--predicate-arg",
-            "--exact",
-            "--predicate-arg",
-            "tests::shrink_harness_fails_on_fail_substring",
-            "--out",
-            &out_text,
-            "--quiet",
-            "--json",
-        ]);
+        let outcome = run(extend_owned_args(
+            shrink_test_args(&input, &out),
+            ["--quiet", "--json"],
+        ));
 
         let CliOutcome::Success(summary) = outcome else {
             panic!("shrink should succeed");
@@ -3765,6 +3725,33 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("temporary report directory should be writable");
 
         dir.join(format!("corpusforge-cli-{name}.json"))
+    }
+
+    fn shrink_test_args(input: &Path, out: &Path) -> Vec<String> {
+        vec![
+            "corpusforge".to_owned(),
+            "shrink".to_owned(),
+            "--input".to_owned(),
+            input.display().to_string(),
+            "--predicate".to_owned(),
+            std::env::current_exe()
+                .expect("test executable should exist")
+                .display()
+                .to_string(),
+            "--predicate-arg".to_owned(),
+            "--ignored".to_owned(),
+            "--predicate-arg".to_owned(),
+            "--exact".to_owned(),
+            "--predicate-arg".to_owned(),
+            "tests::shrink_harness_fails_on_fail_substring".to_owned(),
+            "--out".to_owned(),
+            out.display().to_string(),
+        ]
+    }
+
+    fn extend_owned_args<const N: usize>(mut args: Vec<String>, extra: [&str; N]) -> Vec<String> {
+        args.extend(extra.into_iter().map(str::to_owned));
+        args
     }
 
     fn json_escape_for_test(value: &str) -> String {
